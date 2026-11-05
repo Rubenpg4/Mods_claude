@@ -1,7 +1,7 @@
 {
   "name": "contexto-vivo",
-  "version": "0.3.0",
-  "description": "Ventana de contexto en directo: panel con reparto navegable, diagnóstico, tendencia, subagentes y llamadas; cifra en la fila del modo y /contexto-top",
+  "version": "0.6.0",
+  "description": "Ventana de contexto en directo: panel con reparto navegable, diagnóstico, tendencia, subagentes, llamadas y árbol de checkpoints que restaura y bifurca como rewind, con comparación, búsqueda y exportación; cifra en la fila del modo, /contexto-top y /cp",
   "types": "./types/index.d.ts",
   "userConfig": {
     "avisoPorcentaje": {
@@ -69,6 +69,12 @@
       "title": "Aviso por golpe (tokens)",
       "description": "Tokens que una sola llamada debe añadir para avisar al momento y marcarse como grave",
       "default": 15000
+    },
+    "checkpointsAutomaticos": {
+      "type": "boolean",
+      "title": "Árbol: checkpoint en cada turno",
+      "description": "Guarda un checkpoint al cerrar cada turno, para poder volver a cualquiera; sin esto, solo los de /cp",
+      "default": true
     }
   }
 }

@@ -5,6 +5,7 @@ import {
   CARACTERES_POR_TOKEN,
   CATEGORIAS,
   corta,
+  enLinea,
   etiquetar,
   k,
   nombreHerramienta,
@@ -235,7 +236,26 @@ export function marcarCompactado(): void {
   marcas.recienCompactado = true
 }
 
+// Tras compactar, la conversación es otra: se olvidan las llamadas y la cifra
+// de antes y se vuelve a medir.
+export async function trasCompactar($: EngineInterface): Promise<void> {
+  marcarCompactado()
+  await reiniciar($)
+  await fotografiar($)
+}
+
+// Lo que se olvida cuando la conversación empieza de cero (/clear, o un salto
+// del árbol, que vacía y carga otra).
+export async function olvidarConversacion($: EngineInterface): Promise<void> {
+  await reiniciar($)
+  await cambiarFoto($, () => null)
+  await cambiarHistorial($, () => [])
+  await cambiarSubagentes($, () => [])
+}
+
 // Compacta con lo que la persona pidió conservar; el resultado, en un aviso.
+// Una compactación que pide el propio mod no pasa por su hook de
+// `session.compact`: lo que ese hook hace después va aquí.
 export async function compactar($: EngineInterface): Promise<void> {
   await cambiarConfirmar($, () => false)
   const instrucciones = (await leerConservar($)).trim()
@@ -244,6 +264,7 @@ export async function compactar($: EngineInterface): Promise<void> {
     $.ui.toast(`No se compactó: ${String(r.skip)}`)
     return
   }
+  await trasCompactar($)
   const antes = r.tokensBefore === undefined ? '' : ` ${k(r.tokensBefore)}`
   const despues = r.tokensAfter === undefined ? '' : ` → ${k(r.tokensAfter)}`
   $.ui.toast(`⇣ Conversación compactada${antes}${despues}`)
@@ -292,7 +313,7 @@ export async function abrir($: EngineInterface, ruta: string): Promise<void> {
 export async function cargarMensajes($: EngineInterface): Promise<void> {
   const todos = await $.session.messages()
   const filas = todos.map(m => ({
-    nombre: `${m.role === 'user' ? 'Tú' : 'Claude'}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, 70)}`,
+    nombre: `${m.role === 'user' ? 'Tú' : 'Claude'}: ${enLinea(m.text).slice(0, 70)}`,
     tokens: Math.ceil(m.text.length / CARACTERES_POR_TOKEN),
   }))
   await cambiarMensajes($, () => ordenar(filas, 20))

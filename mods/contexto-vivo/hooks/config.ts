@@ -17,6 +17,8 @@ export type Config = {
   memoria: number
   mcpCargado: number
   golpe: number
+  // Árbol: checkpoint automático al cerrar cada turno.
+  autoCheckpoint: boolean
 }
 
 function numero(valor: unknown, porDefecto: number): number {
@@ -37,5 +39,6 @@ export function leerConfig(opciones: PluginOptions): Config {
     memoria: numero(opciones.limiteMemoria, 4000),
     mcpCargado: numero(opciones.limiteMcpCargado, 20000),
     golpe: numero(opciones.limiteGolpe, 15000),
+    autoCheckpoint: typeof opciones.checkpointsAutomaticos === 'boolean' ? opciones.checkpointsAutomaticos : true,
   }
 }

@@ -3,24 +3,39 @@ import type { Register, Timer } from 'claude-code'
 import {
   cargarIgnorados,
   fotografiar,
-  marcarCompactado,
   marcarHora,
+  olvidarConversacion,
   refrescar,
   registrarLlamada,
   registrarPaso,
   registrarTurno,
-  reiniciar,
   terminarSubagente,
+  trasCompactar,
 } from './acciones'
-import { diagnosticar, informe, pie, tendencia } from './calculo'
+import {
+  buscar,
+  cargarArbol,
+  checkpoint,
+  comparar,
+  etiquetaNodo,
+  exportar,
+  forkear,
+  informeArbol,
+  informeBusqueda,
+  informeComparacion,
+  resolver,
+  restaurar,
+  soltarHead,
+} from './arbol'
+import { diagnosticar, enLinea, informe, pie, tendencia } from './calculo'
 import { leerConfig } from './config'
 import {
-  cambiarFoto,
-  cambiarHistorial,
-  cambiarSubagentes,
+  cambiarPestana,
   cambiarUltimoPrompt,
   leerAhora,
+  leerArbol,
   leerFoto,
+  leerHead,
   leerHistorial,
   leerIgnorados,
   leerLlamadas,
@@ -32,9 +47,13 @@ import { dibujarPanel } from './panel'
 const PANEL = 'contexto-vivo'
 let tic: Timer | null = null
 
+const ARBOL_VACIO = { version: 1 as const, siguiente: 1, nodos: [], heads: {} }
+
 // Contexto vivo: panel /contexto (reparto navegable, diagnóstico, tendencia,
-// subagentes y llamadas), resumen /contexto-top y la cifra en la fila de
-// «auto mode on». Los umbrales vienen de /config.
+// subagentes, llamadas y árbol de checkpoints), resumen /contexto-top, los
+// comandos del árbol (/cp, /cp-ir, /cp-fork, /cp-arbol, /cp-diff, /cp-buscar,
+// /cp-exportar) y la cifra en la fila de «auto mode on». Los umbrales vienen de
+// /config.
 export const register: Register = (on, opciones) => {
   const cfg = leerConfig(opciones)
 
@@ -47,7 +66,36 @@ export const register: Register = (on, opciones) => {
       name: 'contexto-top',
       description: 'Muestra lo que más ocupa la ventana de contexto y los malos usos',
     })
+    await $.command.register({
+      name: 'cp',
+      description: 'Guarda un checkpoint de la conversación con nombre: /cp <nombre>',
+    })
+    await $.command.register({
+      name: 'cp-ir',
+      description: 'Vuelve a un checkpoint del árbol, como rewind: /cp-ir <id o nombre>',
+    })
+    await $.command.register({
+      name: 'cp-fork',
+      description: 'Abre una rama con nombre desde un checkpoint, como /branch: /cp-fork [id o nombre] [-- nombre de la rama]',
+    })
+    await $.command.register({
+      name: 'cp-arbol',
+      description: 'Abre el árbol de checkpoints de la conversación',
+    })
+    await $.command.register({
+      name: 'cp-diff',
+      description: 'Compara dos checkpoints desde que se separan: /cp-diff <a> [b, por defecto el actual]',
+    })
+    await $.command.register({
+      name: 'cp-buscar',
+      description: 'Busca un texto en todos los checkpoints del árbol: /cp-buscar <texto>',
+    })
+    await $.command.register({
+      name: 'cp-exportar',
+      description: 'Exporta la conversación de un checkpoint a Markdown: /cp-exportar [id o nombre]',
+    })
     const r = await next(e)
+    await cargarArbol($).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
     await cargarIgnorados($)
     await marcarHora($)
     await refrescar($, cfg)
@@ -83,9 +131,112 @@ export const register: Register = (on, opciones) => {
     return {}
   })
 
+  // ⎇ Árbol: /cp guarda (y nombra) un checkpoint de la conversación tal como está.
+  on('command.run', { command: 'cp' }, async ($, e) => {
+    const nombre = e.args.replace(/\s+/g, ' ').trim().slice(0, 60)
+    try {
+      const nodo = await checkpoint($, nombre === '' ? undefined : nombre)
+      $.ui.log(nodo === null ? 'No hay conversación que guardar todavía.' : `◆ Checkpoint ${nodo.id}: ${etiquetaNodo(nodo)}`)
+    } catch (error) {
+      $.ui.log(`No se pudo guardar el checkpoint: ${String(error)}`)
+    }
+
+    return {}
+  })
+
+  // /cp-ir <id o nombre>: abre la conversación de ese checkpoint en una sesión
+  // nueva con /resume, como rewind. Eso no se puede hacer mientras este
+  // comando tiene el turno: va justo después.
+  on('command.run', { command: 'cp-ir' }, async ($, e) => {
+    const texto = e.args.trim()
+    const nodo = resolver((await leerArbol($)) ?? ARBOL_VACIO, texto)
+    if (nodo === undefined) {
+      $.ui.log(texto === '' ? 'Uso: /cp-ir <id o nombre>. /cp-arbol muestra el árbol.' : `No hay ningún checkpoint «${texto}».`)
+      return {}
+    }
+    $.clock.after(10, () => void restaurar($, nodo.id))
+
+    return {}
+  })
+
+  // /cp-fork [id o nombre] [-- nombre de la rama]: una rama con nombre desde
+  // ese checkpoint, como /branch; sin id, desde la conversación actual.
+  on('command.run', { command: 'cp-fork' }, async ($, e) => {
+    const corte = e.args.indexOf('--')
+    const referencia = (corte < 0 ? e.args : e.args.slice(0, corte)).trim()
+    const nombre = corte < 0 ? '' : e.args.slice(corte + 2).trim()
+    const nodo =
+      referencia === '' ? ((await checkpoint($)) ?? undefined) : resolver((await leerArbol($)) ?? ARBOL_VACIO, referencia)
+    if (nodo === undefined) {
+      $.ui.log(
+        referencia === ''
+          ? 'No hay conversación de la que hacer un fork todavía.'
+          : `No hay ningún checkpoint «${referencia}». Uso: /cp-fork [id o nombre] [-- nombre de la rama].`,
+      )
+      return {}
+    }
+    $.clock.after(10, () => void forkear($, nodo.id, nombre))
+
+    return {}
+  })
+
+  // /cp-diff <a> [b]: qué tiene cada uno desde que sus ramas se separan.
+  on('command.run', { command: 'cp-diff' }, async ($, e) => {
+    const a = (await leerArbol($)) ?? ARBOL_VACIO
+    const [x, y] = e.args.trim().split(/\s+/).filter(p => p !== '')
+    const primero = x === undefined ? undefined : resolver(a, x)
+    const otro = y === undefined ? await leerHead($) : (resolver(a, y)?.id ?? null)
+    if (primero === undefined || otro === null) {
+      $.ui.log('Uso: /cp-diff <id o nombre> [otro, por defecto el actual]. /cp-arbol muestra el árbol.')
+      return {}
+    }
+    try {
+      $.ui.log(informeComparacion(a, primero.id, otro, await comparar($, primero.id, otro)))
+    } catch (error) {
+      $.ui.log(`No se pudo comparar: ${String(error)}`)
+    }
+
+    return {}
+  })
+
+  on('command.run', { command: 'cp-buscar' }, async ($, e) => {
+    const texto = e.args.trim()
+    if (texto === '') {
+      $.ui.log('Uso: /cp-buscar <texto>')
+      return {}
+    }
+    $.ui.log(informeBusqueda(await leerArbol($), texto, await buscar($, texto)))
+
+    return {}
+  })
+
+  on('command.run', { command: 'cp-exportar' }, async ($, e) => {
+    const texto = e.args.trim()
+    const id = texto === '' ? await leerHead($) : resolver((await leerArbol($)) ?? ARBOL_VACIO, texto)?.id
+    if (id == null) {
+      $.ui.log(texto === '' ? 'Aún no hay checkpoint actual: /cp-exportar <id o nombre>.' : `No hay ningún checkpoint «${texto}».`)
+      return {}
+    }
+    try {
+      $.ui.log(`⇩ ${id} exportado a ${await exportar($, id)}`)
+    } catch (error) {
+      $.ui.log(`No se pudo exportar: ${String(error)}`)
+    }
+
+    return {}
+  })
+
+  on('command.run', { command: 'cp-arbol' }, async $ => {
+    await cambiarPestana($, () => 'arbol')
+    const { isPlaced } = await $.ui.open({ id: PANEL, title: 'Contexto' })
+    if (!isPlaced) $.ui.log(informeArbol(await leerArbol($), await leerHead($)))
+
+    return {}
+  })
+
   // El texto de cada prompt, para nombrar los turnos en la tendencia.
   on('prompt.submit', async ($, e, next) => {
-    await cambiarUltimoPrompt($, () => e.text.replace(/\s+/g, ' ').trim().slice(0, 80))
+    await cambiarUltimoPrompt($, () => enLinea(e.text).slice(0, 80))
 
     return next(e)
   }).catch(($, e, next) => next(e))
@@ -117,27 +268,24 @@ export const register: Register = (on, opciones) => {
     }
     await registrarTurno($)
     await fotografiar($)
+    if (cfg.autoCheckpoint) {
+      await checkpoint($).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
+    }
 
     return r
   })
 
   on('session.compact', async ($, e, next) => {
     const r = await next(e)
-    if (e.agentId === undefined && !('skip' in r && r.skip !== undefined)) {
-      marcarCompactado()
-      await reiniciar($)
-      await fotografiar($)
-    }
+    if (e.agentId === undefined && !('skip' in r && r.skip !== undefined)) await trasCompactar($)
 
     return r
   }).catch(($, e, next) => next(e))
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
-      await reiniciar($)
-      await cambiarFoto($, () => null)
-      await cambiarHistorial($, () => [])
-      await cambiarSubagentes($, () => [])
+      await soltarHead($)
+      await olvidarConversacion($)
     }
 
     return next(e)

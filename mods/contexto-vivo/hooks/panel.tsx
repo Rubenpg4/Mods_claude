@@ -3,6 +3,25 @@ import type { EngineInterface } from 'claude-code'
 import type { Hallazgo, Llamada, Pestana, Subagente } from '../types'
 import { abrir, cargarMensajes, compactar, fotografiar, ignorar, restaurarIgnorados } from './acciones'
 import {
+  ancestroComun,
+  ancestros,
+  borrarRama,
+  buscarNodo,
+  checkpoint,
+  consultarBusqueda,
+  consultarComparacion,
+  enLinea,
+  etiquetaNodo,
+  exportarConAviso,
+  filasArbol,
+  forkear,
+  hijos,
+  injertar,
+  nombrar,
+  restaurar,
+  turnos as nTurnos,
+} from './arbol'
+import {
   barraFina,
   barraRitmo,
   chispa,
@@ -29,11 +48,22 @@ import {
 } from './calculo'
 import type { Config } from './config'
 import {
+  cambiarBorrando,
   cambiarConfirmar,
+  cambiarConsulta,
+  leerConsulta,
   cambiarConservar,
   cambiarNavegacion,
   cambiarPestana,
+  cambiarSeleccion,
+  cambiarVerTodo,
   leerAhora,
+  leerArbol,
+  leerBorrando,
+  leerHead,
+  leerOcupado,
+  leerSeleccion,
+  leerVerTodo,
   leerConfirmar,
   leerConservar,
   leerFoto,
@@ -61,6 +91,7 @@ const PESTANAS: [Pestana, string][] = [
   ['tendencia', '∿ Tendencia'],
   ['subagentes', '◆ Subagentes'],
   ['llamadas', '≡ Llamadas'],
+  ['arbol', '⎇ Árbol'],
 ]
 // El anillo del reparto: diámetro máximo en columnas y lo que necesita como
 // mínimo la leyenda para ir a su lado.
@@ -87,6 +118,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const agentes = await leerSubagentes($)
   const omitidos = await leerIgnorados($)
   const activa = await leerPestana($)
+  const arbol = await leerArbol($)
   const confirmando = await leerConfirmar($)
   const ahora = await leerAhora($)
 
@@ -280,6 +312,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const contador: Partial<Record<Pestana, string>> = {
     diagnostico: hallazgos.length > 0 ? ` ${hallazgos.length}` : '',
     subagentes: activos > 0 ? ` ${activos}` : '',
+    arbol: arbol === null || arbol.nodos.length === 0 ? '' : ` ${arbol.nodos.length}`,
   }
   const barraPestanas = (
     <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
@@ -607,8 +640,239 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
     ]
   }
 
+  // ⎇ Árbol: los checkpoints de la conversación, el HEAD y lo que se puede
+  // hacer con el elegido (restaurar, fork, injertar, comparar, exportar,
+  // nombrar, borrar); debajo, una búsqueda o comparación abierta.
+  const vistaArbol = async () => {
+    const head = await leerHead($)
+    const elegido = buscarNodo(arbol, (await leerSeleccion($)) ?? head) ?? buscarNodo(arbol, head)
+    const todo = await leerVerTodo($)
+    const ocupado = await leerOcupado($)
+    const borrando = await leerBorrando($)
+    const consulta = await leerConsulta($)
+    const Input = tabla.Input
+    if (arbol === null || arbol.nodos.length === 0) {
+      return tarjeta('Árbol de checkpoints', [
+        <Text dimColor wrap="wrap">
+          Aún no hay checkpoints. Se guarda uno al cerrar cada turno; con /cp nombre le pones nombre al punto actual.
+        </Text>,
+        <Button key="arbol-guardar" onPress={() => checkpoint($)}>
+          ◆ Guardar aquí
+        </Button>,
+      ])
+    }
+    const filaNodo = (guia: string, plegados: number, id: string) => {
+      const n = buscarNodo(arbol, id)
+      if (n === undefined) return null
+      const esHead = n.id === head
+      const esElegido = n.id === elegido?.id
+      const marca = esHead ? '◉ ' : n.nombre !== undefined ? '◆ ' : n.padre === null ? '● ' : '○ '
+      const pliegue = plegados > 0 ? `┄${plegados}┄ ` : ''
+      const cifra = ` t${n.turnos} ${k(n.tokens).padStart(5)}`
+      const sitio = Math.max(6, interior - guia.length - pliegue.length - marca.length - cifra.length - (esHead ? 7 : 0))
+      const texto = etiquetaNodo(n).slice(0, sitio)
+      const destacado = n.nombre !== undefined || esHead
+      return (
+        <Button key={`nodo-${n.id}`} plain onPress={() => void cambiarSeleccion($, () => n.id)}>
+          <Text wrap="truncate">
+            <Text dimColor>{guia}</Text>
+            <Text dimColor>{pliegue}</Text>
+            <Text color={esHead ? 'claude' : n.nombre !== undefined ? 'suggestion' : 'inactive'} weight="bold">
+              {marca}
+            </Text>
+            {esElegido ? (
+              <Text inverse weight="bold">
+                {texto}
+              </Text>
+            ) : destacado ? (
+              <Text weight="bold">{texto}</Text>
+            ) : (
+              <Text dimColor>{texto}</Text>
+            )}
+            <Text dimColor>{cifra}</Text>
+            {esHead ? <Text color="claude">{' ← aquí'}</Text> : null}
+          </Text>
+        </Button>
+      )
+    }
+
+    // El detalle del elegido y cómo se relaciona con la conversación actual.
+    let detalle: unknown = null
+    if (elegido !== undefined) {
+      const n = elegido
+      const fecha = new Date(n.creado)
+      const dos = (x: number) => String(x).padStart(2, '0')
+      const cuando = `${dos(fecha.getDate())}/${dos(fecha.getMonth() + 1)} ${dos(fecha.getHours())}:${dos(fecha.getMinutes())}`
+      const comun = head === null ? undefined : ancestroComun(arbol, n.id, head)
+      const actual = buscarNodo(arbol, head)
+      const enLaActual = comun?.id === n.id
+      let relacion = 'otra conversación'
+      if (n.id === head) relacion = 'es la conversación actual'
+      else if (enLaActual && actual !== undefined) relacion = `${nTurnos(actual.turnos - n.turnos)} por detrás de la actual`
+      else if (comun !== undefined && actual !== undefined) {
+        relacion = `se separa en ${etiquetaNodo(comun).slice(0, 24)} · +${n.turnos - comun.turnos} aquí / +${actual.turnos - comun.turnos} en la actual`
+      }
+      const ramas = hijos(arbol, n.id).length
+      const nivel = ancestros(arbol, n.id).length
+      detalle = tarjeta(
+        `${n.id === head ? '◉' : n.nombre !== undefined ? '◆' : '○'} ${etiquetaNodo(n)}`.slice(0, interior),
+        [
+          dato('Checkpoint', <Text>{`${n.id} · ${cuando} · nivel ${nivel}${ramas > 1 ? ` · ${ramas} ramas` : ''}`}</Text>),
+          dato('Conversación', <Text weight="bold">{`${nTurnos(n.turnos)} · ${n.mensajes} mensajes · ≈${k(n.tokens)}`}</Text>),
+          dato('Relación', <Text>{relacion}</Text>),
+          n.prompt === '' || n.nombre === undefined ? null : dato('Último prompt', <Text dimColor>{`«${enLinea(n.prompt)}»`}</Text>),
+          Input === undefined ? null : (
+            <Input
+              key={`nombre-${n.id}`}
+              label="Nombre"
+              placeholder="p. ej. «antes del refactor»"
+              value={n.nombre ?? ''}
+              submitLabel="Nombrar"
+              onSubmit={(valor: string) => void nombrar($, n.id, valor)}
+            />
+          ),
+          ocupado !== null || Input === undefined ? null : (
+            <Input
+              key={`fork-${n.id}`}
+              label="Fork"
+              placeholder="nombre de la rama nueva desde aquí"
+              value=""
+              submitLabel="⑂ Fork"
+              onSubmit={(valor: string) => forkear($, n.id, valor)}
+            />
+          ),
+          ocupado === null ? null : <Text color="warning">{`… ${ocupado}`}</Text>,
+          borrando === n.id ? (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+              <Text color="error" weight="bold">
+                ¿Borrar este checkpoint y todo lo que cuelga de él?
+              </Text>
+              <Button key="borrar-si" variant="primary" onPress={() => borrarRama($, n.id)}>
+                Sí, borrar
+              </Button>
+              <Button key="borrar-no" onPress={() => void cambiarBorrando($, () => null)}>
+                Cancelar
+              </Button>
+            </Box>
+          ) : (
+            <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+              {n.id === head || ocupado !== null ? null : (
+                <Button key="ir" variant="primary" onPress={() => restaurar($, n.id)}>
+                  ⤺ Restaurar aquí
+                </Button>
+              )}
+              {enLaActual || head === null ? null : (
+                <Button key="injertar" onPress={() => injertar($, n.id)}>
+                  ⎇ Injertar en la actual
+                </Button>
+              )}
+              {n.id === head || head === null ? null : (
+                <Button key="comparar" onPress={() => consultarComparacion($, n.id, head)}>
+                  ⇄ Comparar con la actual
+                </Button>
+              )}
+              <Button key="exportar" onPress={() => exportarConAviso($, n.id)}>
+                ⇩ Exportar
+              </Button>
+              {n.id === head || enLaActual ? null : (
+                <Button key="borrar" onPress={() => void cambiarBorrando($, () => n.id)}>
+                  ✕ Borrar rama
+                </Button>
+              )}
+            </Box>
+          ),
+        ],
+        n.id === head ? 'claude' : 'suggestion',
+      )
+    }
+
+    // Lo abierto bajo el detalle: los aciertos de una búsqueda (cada uno lleva a
+    // su checkpoint) o lo que cada lado de una comparación tiene de propio.
+    const nombreDe = (id: string) => {
+      const n = buscarNodo(arbol, id)
+      return n === undefined ? id : `${id} ${etiquetaNodo(n)}`
+    }
+    const cerrar = (
+      <Button key="consulta-cerrar" onPress={() => void cambiarConsulta($, () => null)}>
+        ✕ Cerrar
+      </Button>
+    )
+    let abierta: unknown = null
+    if (consulta?.tipo === 'buscar') {
+      abierta = tarjeta(`⌕ «${enLinea(consulta.texto)}» · ${consulta.total} ${consulta.total === 1 ? 'acierto' : 'aciertos'}`.slice(0, interior), [
+        consulta.total === 0 ? <Text dimColor>Nada con ese texto en los checkpoints.</Text> : null,
+        ...consulta.resultados.map((acierto, i) => (
+          <Button key={`hallado-${i}`} plain onPress={() => void cambiarSeleccion($, () => acierto.id)}>
+            <Text wrap="truncate">
+              <Text color="suggestion" weight="bold">{`${acierto.id.padEnd(5)}`}</Text>
+              <Text dimColor>{`${acierto.quien}: `}</Text>
+              <Text>{enLinea(acierto.extracto)}</Text>
+            </Text>
+          </Button>
+        )),
+        consulta.total > consulta.resultados.length ? (
+          <Text dimColor>{`… y ${consulta.total - consulta.resultados.length} más: afina la búsqueda`}</Text>
+        ) : null,
+        cerrar,
+      ])
+    } else if (consulta?.tipo === 'comparar') {
+      const lado = (id: string, ps: typeof consulta.deA) => [
+        <Text weight="bold" wrap="truncate">{`${nombreDe(id)} · +${nTurnos(ps.length)}`}</Text>,
+        ps.length === 0 ? <Text dimColor>{'  nada propio: es un punto anterior de la otra rama'}</Text> : null,
+        ...ps.map((p, i) => (
+          <Box flexDirection="column">
+            <Text wrap="truncate">
+              <Text dimColor>{`${String(i + 1).padStart(3)}. `}</Text>
+              <Text>{`«${enLinea(p.prompt)}»`}</Text>
+            </Text>
+            <Text dimColor wrap="truncate">
+              {`     ${p.respuesta === '' ? '(sin texto)' : enLinea(p.respuesta)}${p.herramientas > 0 ? ` · ${p.herramientas} herr.` : ''}`}
+            </Text>
+          </Box>
+        )),
+      ]
+      abierta = tarjeta('⇄ Comparación', [
+        dato('Se separan en', <Text>{consulta.comun === null ? 'no tienen historia en común' : nombreDe(consulta.comun)}</Text>),
+        ...lado(consulta.a, consulta.deA),
+        ...lado(consulta.b, consulta.deB),
+        cerrar,
+      ])
+    }
+
+    return [
+      tarjeta(`Árbol · ${arbol.nodos.length} checkpoints`, [
+        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          <Button key="arbol-guardar" onPress={() => checkpoint($)}>
+            ◆ Guardar aquí
+          </Button>
+          <Button key="arbol-todo" onPress={() => void cambiarVerTodo($, v => !v)}>
+            {todo ? '⇡ Plegar cadenas' : '⇣ Ver cada turno'}
+          </Button>
+        </Box>,
+        ...filasArbol(arbol, head, elegido?.id ?? null, todo).map(f => filaNodo(f.guia, f.plegados, f.nodo.id)),
+        <Text dimColor wrap="truncate">
+          {'◉ aquí  ◆ con nombre  ○ turno  ┄n┄ plegados'}
+        </Text>,
+        Input === undefined ? null : (
+          <Input
+            key="arbol-buscar"
+            label="Buscar"
+            placeholder="texto en todos los checkpoints"
+            value={consulta?.tipo === 'buscar' ? consulta.texto : ''}
+            submitLabel="Buscar"
+            onSubmit={(valor: string) => consultarBusqueda($, valor)}
+          />
+        ),
+      ]),
+      detalle,
+      abierta,
+    ]
+  }
+
   const cuerpo =
-    activa === 'diagnostico'
+    activa === 'arbol'
+      ? await vistaArbol()
+      : activa === 'diagnostico'
       ? vistaDiagnostico()
       : activa === 'tendencia'
         ? await vistaTendencia()

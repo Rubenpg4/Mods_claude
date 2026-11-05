@@ -56,6 +56,18 @@ export function ordenar<T extends { tokens: number }>(filas: T[], cuantas: numbe
   return [...filas].sort((a, b) => b.tokens - a.tokens).slice(0, cuantas)
 }
 
+// Texto de la conversación listo para dibujar en una línea: sin secuencias de
+// escape ANSI (las trae la salida de algunos comandos) ni otros caracteres de
+// control, que el panel no acepta, y con los espacios juntos.
+export function enLinea(texto: string): string {
+  return texto
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b[\]P^_][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, '')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function corta(ruta: string): string {
   return ruta.split(/[\\/]/).slice(-2).join('/')
 }

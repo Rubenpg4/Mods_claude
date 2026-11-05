@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
-import type { Aviso, Fila, Foto, Llamada, Pestana, Subagente, Total, Turno } from '../types'
+import type { Arbol, Aviso, Consulta, Fila, Foto, Llamada, Pestana, Subagente, Total, Turno } from '../types'
 
 // El estado que el panel y la fila de «auto mode on» leen. Cambiar la etiqueta
 // `shape` de un valor si cambian sus campos: lo guardado sobrevive a la recarga.
@@ -50,6 +50,28 @@ const ultimoPrompt = atom({ plugin: 'contexto-vivo', key: 'ultimoPrompt' } as co
 })
 const ahora = atom({ plugin: 'contexto-vivo', key: 'ahora' } as const, 0, {
   shape: 'ahora-1',
+})
+const arbol = atom({ plugin: 'contexto-vivo', key: 'arbol' } as const, null, {
+  shape: 'arbol-2',
+})
+const head = atom({ plugin: 'contexto-vivo', key: 'head' } as const, null, {
+  shape: 'head-2',
+})
+const seleccion = atom({ plugin: 'contexto-vivo', key: 'seleccion' } as const, null, {
+  shape: 'seleccion-1',
+})
+const verTodo = atom({ plugin: 'contexto-vivo', key: 'verTodo' } as const, false, {
+  shape: 'verTodo-1',
+})
+const borrando = atom({ plugin: 'contexto-vivo', key: 'borrando' } as const, null, {
+  shape: 'borrando-1',
+})
+const ocupado = atom({ plugin: 'contexto-vivo', key: 'ocupado' } as const, null, {
+  shape: 'ocupado-1',
+})
+const consulta = atom({ plugin: 'contexto-vivo', key: 'consulta' } as const, null, {
+  // -2: la -1 podía guardar texto con secuencias de escape que el panel rechaza.
+  shape: 'consulta-2',
 })
 
 type $ = EngineInterface
@@ -155,4 +177,53 @@ export function leerUltimoPrompt($: $) {
 }
 export function cambiarUltimoPrompt($: $, f: Cambio<string>) {
   return update($, ultimoPrompt, f)
+}
+
+export function leerArbol($: $) {
+  return read($, arbol)
+}
+export function cambiarArbol($: $, f: Cambio<Arbol | null>) {
+  return update($, arbol, f)
+}
+
+export function leerHead($: $) {
+  return read($, head)
+}
+export function cambiarHead($: $, f: Cambio<string | null>) {
+  return update($, head, f)
+}
+
+export function leerSeleccion($: $) {
+  return read($, seleccion)
+}
+export function cambiarSeleccion($: $, f: Cambio<string | null>) {
+  return update($, seleccion, f)
+}
+
+export function leerVerTodo($: $) {
+  return read($, verTodo)
+}
+export function cambiarVerTodo($: $, f: Cambio<boolean>) {
+  return update($, verTodo, f)
+}
+
+export function leerBorrando($: $) {
+  return read($, borrando)
+}
+export function cambiarBorrando($: $, f: Cambio<string | null>) {
+  return update($, borrando, f)
+}
+
+export function leerOcupado($: $) {
+  return read($, ocupado)
+}
+export function cambiarOcupado($: $, f: Cambio<string | null>) {
+  return update($, ocupado, f)
+}
+
+export function leerConsulta($: $) {
+  return read($, consulta)
+}
+export function cambiarConsulta($: $, f: Cambio<Consulta | null>) {
+  return update($, consulta, f)
 }

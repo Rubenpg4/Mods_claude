@@ -103,7 +103,50 @@ export type Subagente = {
   activo: boolean
 }
 
-export type Pestana = 'reparto' | 'diagnostico' | 'tendencia' | 'subagentes' | 'llamadas'
+export type Pestana = 'reparto' | 'diagnostico' | 'tendencia' | 'subagentes' | 'llamadas' | 'arbol'
+
+// Un checkpoint del árbol de la conversación: un puntero a un mensaje del
+// transcript del motor (`sesion` + `uuid`). Su conversación es la cadena que
+// sube desde ese mensaje, como en rewind; el checkpoint no copia nada.
+export type Nodo = {
+  id: string
+  padre: string | null
+  // Nombre que le dio la persona (o el del fork); sin él es automático.
+  nombre?: string
+  creado: number
+  // La sesión cuyo transcript tiene el mensaje, y el mensaje.
+  sesion: string
+  uuid: string
+  // Mensajes y prompts de la conversación en este punto, ocupación y el
+  // último prompt.
+  mensajes: number
+  turnos: number
+  tokens: number
+  prompt: string
+}
+
+// Un acierto de la búsqueda en el árbol: el checkpoint y el texto alrededor.
+export type Hallado = { id: string; quien: string; extracto: string }
+
+// Un turno de una rama, para comparar: el prompt, cómo acabó la respuesta y
+// cuántas herramientas usó.
+export type Paso = { prompt: string; respuesta: string; herramientas: number }
+
+// Lo que la pestaña Árbol muestra bajo el detalle: una búsqueda o una
+// comparación entre dos checkpoints.
+export type Consulta =
+  | { tipo: 'buscar'; texto: string; resultados: Hallado[]; total: number }
+  | { tipo: 'comparar'; a: string; b: string; comun: string | null; deA: Paso[]; deB: Paso[] }
+
+// El árbol de un proyecto: los nodos, en qué nodo está cada sesión (HEAD) y
+// el nombre de cada sesión que es un fork con nombre.
+export type Arbol = {
+  version: 2
+  siguiente: number
+  nodos: Nodo[]
+  heads: Record<string, string>
+  titulos: Record<string, string>
+}
 
 // El último umbral avisado y el `orden` de la última llamada de entonces.
 export type Aviso = { nivel: number; desde: number }
@@ -132,6 +175,20 @@ declare module 'claude-code' {
       ultimoPrompt: Shaped<string>
       // La hora, refrescada cada minuto: mantiene viva la cuenta atrás de 5h/7d.
       ahora: Shaped<number>
+      // El árbol de checkpoints del proyecto (copia de lo guardado en disco).
+      arbol: Shaped<Arbol | null>
+      // El HEAD de esta sesión: el nodo en que está la conversación.
+      head: Shaped<string | null>
+      // El nodo elegido en la pestaña Árbol.
+      seleccion: Shaped<string | null>
+      // Mostrar cada turno en lugar de plegar las cadenas automáticas.
+      verTodo: Shaped<boolean>
+      // El nodo cuyo borrado espera confirmación.
+      borrando: Shaped<string | null>
+      // Una operación del árbol en curso (restaurar, fork, injertar), para el panel.
+      ocupado: Shaped<string | null>
+      // La búsqueda o comparación abierta en la pestaña Árbol.
+      consulta: Shaped<Consulta | null>
     }
   }
 }
