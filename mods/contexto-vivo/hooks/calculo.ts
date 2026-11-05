@@ -1,4 +1,4 @@
-import type { Entrada, Fila, Foto, Hallazgo, Llamada, Quesito, Subagente, Total, Turno } from '../types'
+import type { Entrada, Fila, Foto, Hallazgo, Limite, Llamada, Quesito, Subagente, Total, Turno } from '../types'
 import type { Config } from './config'
 
 // Caracteres por token al estimar un resultado (texto en español y código).
@@ -110,6 +110,95 @@ export function segmentos(porcentaje: number, ancho = 10): string {
 // Minigráfica de una línea: un escalón por valor (0–100).
 export function chispa(valores: number[]): string {
   return valores.map(v => ESCALONES[Math.min(7, Math.max(0, Math.round((v / 100) * 7)))] ?? '▁').join('')
+}
+
+// ── Ventanas de uso (5h, 7d) ───────────────────────────────────────────────
+const HORA = 3_600_000
+const DIA = 24 * HORA
+// Lo que dura cada ventana, para saber cuánto de ella ha pasado.
+const DURACION: Record<string, number> = { '5h': 5 * HORA, '7d': 7 * DIA }
+// Por debajo de esta parte transcurrida la proyección es ruido: no avisa.
+const RITMO_MINIMO = 5
+
+// Una ventana de uso lista para dibujar.
+export type Ventana = {
+  tipo: string
+  // Lo gastado, 0–100.
+  usado: number
+  // Lo transcurrido de la ventana, 0–100: lo que irías gastando al paso del
+  // tiempo. null sin hora de reinicio o en ventanas sin duración fija.
+  ritmo: number | null
+  // Milisegundos hasta el reinicio; null sin dato.
+  falta: number | null
+  // Milisegundos hasta agotarla al ritmo actual, cuando es antes del reinicio.
+  agota: number | null
+}
+
+export function ventanas(limites: Limite[], ahora: number): Ventana[] {
+  return limites.map(l => {
+    const usado = Math.min(100, Math.max(0, 100 - l.libre))
+    const falta = l.reinicio === undefined ? null : Math.max(0, l.reinicio - ahora)
+    const duracion = DURACION[l.tipo]
+    const pasado = falta === null || duracion === undefined ? null : Math.min(duracion, Math.max(0, duracion - falta))
+    const ritmo = pasado === null || duracion === undefined ? null : (pasado / duracion) * 100
+    // Proyección lineal: gastando como hasta ahora, se agota antes del reinicio
+    // justo cuando lo gastado va por delante de lo transcurrido.
+    const agota =
+      pasado === null || ritmo === null || ritmo < RITMO_MINIMO || usado <= ritmo || usado >= 100
+        ? null
+        : ((100 - usado) * pasado) / usado
+    return { tipo: l.tipo, usado, ritmo, falta, agota }
+  })
+}
+
+// «45m», «2h 14m», «3d 4h»: lo que falta, redondeado al minuto hacia arriba.
+export function duracionCorta(ms: number): string {
+  const minutos = Math.max(1, Math.ceil(ms / 60_000))
+  if (minutos < 60) return `${minutos}m`
+  const horas = Math.floor(minutos / 60)
+  if (horas < 24) return `${horas}h ${String(minutos % 60).padStart(2, '0')}m`
+  return `${Math.floor(horas / 24)}d ${horas % 24}h`
+}
+
+// Clave del tema para una ventana: roja desde el 85 %, ámbar desde el 70 % o
+// si va por encima del ritmo.
+export function colorVentana(v: Ventana): string {
+  if (v.usado >= 85) return 'error'
+  if (v.usado >= 70 || v.agota !== null) return 'warning'
+  return 'success'
+}
+
+// El color más grave de varias ventanas.
+export function peorColor(vs: Ventana[]): string {
+  const orden = ['success', 'warning', 'error']
+  return vs.map(colorVentana).reduce((a, b) => (orden.indexOf(b) > orden.indexOf(a) ? b : a), 'success')
+}
+
+// Un tramo de la barra de uso: lo gastado, lo libre o la marca del ritmo.
+export type Tramo = { clase: 'usado' | 'libre' | 'marca'; texto: string }
+
+// Barra de uso con resolución de octavos y, si hay ritmo, una marca │ donde
+// irías al paso del tiempo.
+export function barraRitmo(usado: number, ritmo: number | null, ancho: number): Tramo[] {
+  const octavos = Math.round((Math.min(100, Math.max(0, usado)) / 100) * ancho * 8)
+  const llenas = Math.floor(octavos / 8)
+  const resto = octavos % 8
+  const marca = ritmo === null ? -1 : Math.min(ancho - 1, Math.floor((ritmo / 100) * ancho))
+  const tramos: Tramo[] = []
+  for (let i = 0; i < ancho; i++) {
+    const celda: Tramo =
+      i === marca
+        ? { clase: 'marca', texto: '│' }
+        : i < llenas
+          ? { clase: 'usado', texto: '█' }
+          : i === llenas && resto > 0
+            ? { clase: 'usado', texto: OCTAVOS[resto] ?? '' }
+            : { clase: 'libre', texto: '░' }
+    const ultimo = tramos.at(-1)
+    if (ultimo !== undefined && ultimo.clase === celda.clase) ultimo.texto += celda.texto
+    else tramos.push(celda)
+  }
+  return tramos
 }
 
 export function etiquetar(entrada: Record<string, unknown>): string {
@@ -326,12 +415,19 @@ export function tendencia(turnos: Turno[], f: Foto | null, t: Total | null): Ten
   return { media, objetivo, turnosRestantes, mayores }
 }
 
-// La cola de la línea de «auto mode on»: contexto, turnos, uso libre y avisos.
-export function pie(t: Total | null, turnos: number | null, avisos: number): string {
+// La cola de la línea de «auto mode on»: contexto, turnos, uso de las ventanas
+// (con la cuenta atrás si falta menos de un día y ↗ si va por encima del
+// ritmo) y avisos.
+export function pie(t: Total | null, turnos: number | null, avisos: number, ahora: number): string {
   const alerta = avisos > 0 ? `  ·  ⚠ ${avisos}` : ''
   if (t === null) return `  ○ ctx —${alerta}`
   const restantes = turnos === null ? '' : `  ·  ~${turnos} turno${turnos === 1 ? '' : 's'}`
-  const uso = t.limites.map(l => `${l.tipo} ${l.libre}% libre`).join(' · ')
+  const uso = ventanas(t.limites, ahora)
+    .map(v => {
+      const reinicio = v.falta !== null && v.falta < DIA ? ` ↻${duracionCorta(v.falta).replace(' ', '')}` : ''
+      return `${sector(v.usado)} ${v.tipo} ${v.usado}%${reinicio}${v.agota === null ? '' : ' ↗'}`
+    })
+    .join(' · ')
   return `  ${sector(t.porcentaje)} ctx ${t.porcentaje}% ${segmentos(t.porcentaje)} ${k(t.tokens)}/${k(t.ventana)}${restantes}${uso === '' ? '' : `  ·  ${uso}`}${alerta}`
 }
 

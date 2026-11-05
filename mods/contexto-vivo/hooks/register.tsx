@@ -1,9 +1,10 @@
-import type { Register } from 'claude-code'
+import type { Register, Timer } from 'claude-code'
 
 import {
   cargarIgnorados,
   fotografiar,
   marcarCompactado,
+  marcarHora,
   refrescar,
   registrarLlamada,
   registrarPaso,
@@ -18,6 +19,7 @@ import {
   cambiarHistorial,
   cambiarSubagentes,
   cambiarUltimoPrompt,
+  leerAhora,
   leerFoto,
   leerHistorial,
   leerIgnorados,
@@ -28,6 +30,7 @@ import {
 import { dibujarPanel } from './panel'
 
 const PANEL = 'contexto-vivo'
+let tic: Timer | null = null
 
 // Contexto vivo: panel /contexto (reparto navegable, diagnóstico, tendencia,
 // subagentes y llamadas), resumen /contexto-top y la cifra en la fila de
@@ -46,7 +49,11 @@ export const register: Register = (on, opciones) => {
     })
     const r = await next(e)
     await cargarIgnorados($)
+    await marcarHora($)
     await refrescar($, cfg)
+    // Un tic por minuto para que la cuenta atrás de 5h/7d no se quede parada
+    // mientras no hay respuestas. Una recarga del módulo cancela el anterior.
+    tic ??= $.clock.every(60_000, () => void marcarHora($))
 
     return r
   })
@@ -143,7 +150,7 @@ export const register: Register = (on, opciones) => {
     const t = await leerTotal($)
     const avisos = diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($)).length
     const turnos = tendencia(await leerHistorial($), f, t).turnosRestantes
-    const cola = pie(t, turnos, avisos)
+    const cola = pie(t, turnos, avisos, await leerAhora($))
 
     return next({ ...e, props: { ...e.props, tail: `${e.props.tail ?? ''}${cola}` } })
   })

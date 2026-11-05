@@ -1,4 +1,12 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
+
+// Las 12:00 UTC: 5h reinicia en 2h 14m (lleva el 55 % y ha gastado el 37 %, por
+// debajo del ritmo); 7d en 3d 4h (lleva el 55 % y ha gastado el 60 %, por encima).
+const T0 = Date.parse('2026-11-05T12:00:00Z')
+const LIMITES = [
+  { kind: 'five_hour', percentUsed: 37, resetsAt: '2026-11-05T14:14:00Z' },
+  { kind: 'seven_day', percentUsed: 60, resetsAt: '2026-11-08T16:00:00Z' },
+]
 
 const PANEL = {
   plugin: 'contexto-vivo',
@@ -66,13 +74,14 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   const guardado = new Map<string, unknown>()
   let uso = { tokens: 100000, window: 200000, percent: 50 }
   let usoPaso = USO(0, 0)
+  const reloj = mock.clock(on, { now: T0 })
 
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('session.usage', (_, e) => ({
     value: {
       startedAt: 0,
       context: { ...uso, breakdown: (e as { breakdown?: string } | undefined)?.breakdown ? DESGLOSE : undefined },
-      rateLimits: [{ kind: 'five_hour', percentUsed: 37 }],
+      rateLimits: LIMITES,
     },
   }))
   on('ui.toast', (_, e) => {
@@ -151,9 +160,21 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
     props: { isDraft: false, isWorking: false, hint: 'auto mode on' },
   })
   expect((await fila.find({ type: 'Text' }))?.text).toBe(
-    '  ◕ ctx 75% ▰▰▰▰▰▰▰▰▱▱ 150k/200k  ·  ~1 turno  ·  5h 63% libre  ·  ⚠ 2',
+    '  ◕ ctx 75% ▰▰▰▰▰▰▰▰▱▱ 150k/200k  ·  ~1 turno  ·  ◔ 5h 37% ↻2h14m · ◑ 7d 60% ↗  ·  ⚠ 2',
   )
+  // El tic de cada minuto mueve la cuenta atrás sin esperar a una respuesta.
+  await reloj.advance(60_000)
+  expect((await fila.find({ type: 'Text' }))?.text).toContain('◔ 5h 37% ↻2h13m')
   await fila.unmount()
+
+  // Límites de uso: barra con la marca del ritmo, % usado, reinicio y proyección.
+  const limites = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await limites.find({ type: 'Text', text: /Límites de uso/ })).toBeDefined()
+  expect(await limites.find({ type: 'Text', text: /^5h .*│.* 37 % {2}↻ 2h 13m/ })).toBeDefined()
+  expect(await limites.find({ type: 'Text', text: /^7d .*│.* 60 % {2}↻ 3d 3h/ })).toBeDefined()
+  expect(await limites.find({ type: 'Text', text: /⚠ 7d: a este ritmo se agota en ~2d 13h/ })).toBeDefined()
+  expect(await limites.find({ type: 'Text', text: /no llegas al límite/ })).toBeUndefined()
+  await limites.unmount()
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANEL, surface })
@@ -215,6 +236,7 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
 
 test('los umbrales salen de /config', { options: { avisoPorcentaje: 40, avisosEmergentes: false } }, async ($, on) => {
   const avisos: string[] = []
+  mock.clock(on, { now: T0 })
   on('command.register', (_, e) => ({ value: { command: e.name } }))
   on('store.get', () => ({ value: undefined }))
   on('ui.status', () => ({ value: undefined }))
@@ -232,5 +254,7 @@ test('los umbrales salen de /config', { options: { avisoPorcentaje: 40, avisosEm
   expect(avisos.length).toBe(0)
   const ui = await $.ui.mount({ ...PANEL, surface: 'terminal' })
   expect(await ui.find({ key: 'compactar' })).toBeDefined()
+  // Sin suscripción no hay ventanas de uso: la tarjeta no sale.
+  expect(await ui.find({ type: 'Text', text: /Límites de uso/ })).toBeUndefined()
   await ui.unmount()
 })

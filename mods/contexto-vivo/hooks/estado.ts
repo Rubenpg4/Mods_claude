@@ -11,7 +11,7 @@ const llamadas = atom({ plugin: 'contexto-vivo', key: 'llamadas' } as const, [],
   shape: 'llamadas-2',
 })
 const total = atom({ plugin: 'contexto-vivo', key: 'total' } as const, null, {
-  shape: 'total-3',
+  shape: 'total-4',
 })
 const foto = atom({ plugin: 'contexto-vivo', key: 'foto' } as const, null, {
   shape: 'foto-3',
@@ -48,6 +48,9 @@ const conservar = atom({ plugin: 'contexto-vivo', key: 'conservar' } as const, '
 const ultimoPrompt = atom({ plugin: 'contexto-vivo', key: 'ultimoPrompt' } as const, '', {
   shape: 'prompt-1',
 })
+const ahora = atom({ plugin: 'contexto-vivo', key: 'ahora' } as const, 0, {
+  shape: 'ahora-1',
+})
 
 type $ = EngineInterface
 type Cambio<T> = (valor: T) => T
@@ -65,6 +68,13 @@ export function cambiarLlamadas($: $, f: Cambio<Llamada[]>) {
 
 export function leerTotal($: $) {
   return read($, total)
+}
+
+export function leerAhora($: $) {
+  return read($, ahora)
+}
+export function cambiarAhora($: $, f: Cambio<number>) {
+  return update($, ahora, f)
 }
 export function cambiarTotal($: $, f: Cambio<Total | null>) {
   return update($, total, f)

@@ -4,11 +4,14 @@ import type { Hallazgo, Llamada, Pestana, Subagente } from '../types'
 import { abrir, cargarMensajes, compactar, fotografiar, ignorar, restaurarIgnorados } from './acciones'
 import {
   barraFina,
+  barraRitmo,
   chispa,
   colorCache,
   colorNivel,
+  colorVentana,
   css,
   diagnosticar,
+  duracionCorta,
   entradas,
   familia,
   GRIS,
@@ -16,11 +19,13 @@ import {
   nombreHerramienta,
   ordenar,
   PALETA,
+  peorColor,
   quesitos,
   sector,
   segmentos,
   SIN_DETALLE,
   tendencia,
+  ventanas,
 } from './calculo'
 import type { Config } from './config'
 import {
@@ -28,6 +33,7 @@ import {
   cambiarConservar,
   cambiarNavegacion,
   cambiarPestana,
+  leerAhora,
   leerConfirmar,
   leerConservar,
   leerFoto,
@@ -77,6 +83,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const omitidos = await leerIgnorados($)
   const activa = await leerPestana($)
   const confirmando = await leerConfirmar($)
+  const ahora = await leerAhora($)
 
   const ancho = Math.max(24, e.props.bodyColumns)
   const interior = ancho - 4
@@ -197,16 +204,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         </Text>
       )}
       <Text wrap="truncate">
-        {(t?.limites ?? []).map(l => (
-          <Text>
-            <Text dimColor>{`${l.tipo} `}</Text>
-            <Text color={l.libre <= 15 ? 'error' : l.libre <= 30 ? 'warning' : 'success'} weight="bold">
-              {`${l.libre}%`}
-            </Text>
-            <Text dimColor> libre   </Text>
-          </Text>
-        ))}
-        <Text dimColor>caché </Text>
+        <Text dimColor>⟲ caché </Text>
         <Text color={colorCache(t?.cache ?? null)} weight="bold">
           {t?.cache == null ? '—' : `${t.cache}%`}
         </Text>
@@ -214,6 +212,53 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
       {cercaDeCompactar && activa !== 'tendencia' ? controlesCompactar() : null}
     </Box>
   )
+
+  // ── Límites de uso: barra, % usado, marca del ritmo y cuenta atrás ─────────
+  const vs = ventanas(t?.limites ?? [], ahora)
+  const anchoTipo = Math.max(0, ...vs.map(v => v.tipo.length)) + 2
+  const reinicios = vs.map(v => (v.falta === null ? '' : `  ↻ ${duracionCorta(v.falta)}`))
+  const anchoReinicio = Math.max(0, ...reinicios.map(r => r.length))
+  const anchoBarraUso = Math.max(6, interior - anchoTipo - 7 - anchoReinicio)
+  const hayRitmo = vs.some(v => v.ritmo !== null)
+  const agotan = vs.filter(v => v.agota !== null)
+  const limitesUso =
+    vs.length === 0
+      ? null
+      : tarjeta(
+          'Límites de uso',
+          <Box flexDirection="column">
+            {vs.map((v, i) => (
+              <Text key={`limite-${v.tipo}`} wrap="truncate">
+                <Text weight="bold">{v.tipo.padEnd(anchoTipo)}</Text>
+                {barraRitmo(v.usado, v.ritmo, anchoBarraUso).map(tr =>
+                  tr.clase === 'usado' ? (
+                    <Text color={colorVentana(v)}>{tr.texto}</Text>
+                  ) : tr.clase === 'marca' ? (
+                    <Text weight="bold">{tr.texto}</Text>
+                  ) : (
+                    <Text dimColor>{tr.texto}</Text>
+                  ),
+                )}
+                <Text color={colorVentana(v)} weight="bold">
+                  {`${v.usado} %`.padStart(7)}
+                </Text>
+                <Text dimColor>{(reinicios[i] ?? '').padEnd(anchoReinicio)}</Text>
+              </Text>
+            ))}
+            {agotan.map(v => (
+              <Text key={`agota-${v.tipo}`} color="warning" wrap="truncate">
+                {`⚠ ${v.tipo}: a este ritmo se agota en ~${duracionCorta(v.agota ?? 0)}`}
+              </Text>
+            ))}
+            {agotan.length === 0 && hayRitmo ? (
+              <Text wrap="truncate">
+                <Text color="success">✓ a este ritmo no llegas al límite</Text>
+                <Text dimColor>{'  ·  │ ritmo'}</Text>
+              </Text>
+            ) : null}
+          </Box>,
+          peorColor(vs),
+        )
 
   // ── Pestañas ───────────────────────────────────────────────────────────────
   const activos = agentes.filter(a => a.activo).length
@@ -556,6 +601,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   return (
     <Box flexDirection="column">
       {cabecera}
+      {limitesUso}
       {barraPestanas}
       {cuerpo}
       <Text dimColor wrap="truncate">

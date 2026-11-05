@@ -49,8 +49,9 @@ export type Entrada = {
   nota?: string
 }
 
-// Lo que queda de una ventana de uso (`5h`, `7d`), en porcentaje.
-export type Limite = { tipo: string; libre: number }
+// Lo que queda de una ventana de uso (`5h`, `7d`), en porcentaje, y cuándo se
+// reinicia (milisegundos desde la época), si la API lo dice.
+export type Limite = { tipo: string; libre: number; reinicio?: number }
 
 // La ocupación tras la última respuesta de la API, como la línea de estado, y
 // cómo le fue a la caché en esa petición.
@@ -129,6 +130,8 @@ declare module 'claude-code' {
       conservar: Shaped<string>
       // El último prompt enviado, para nombrar cada turno.
       ultimoPrompt: Shaped<string>
+      // La hora, refrescada cada minuto: mantiene viva la cuenta atrás de 5h/7d.
+      ahora: Shaped<number>
     }
   }
 }

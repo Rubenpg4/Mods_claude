@@ -14,6 +14,7 @@ import {
 } from './calculo'
 import type { Config } from './config'
 import {
+  cambiarAhora,
   cambiarAviso,
   cambiarConfirmar,
   cambiarFoto,
@@ -40,6 +41,12 @@ function tokensDe(usage: ModelUsage): number {
   return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
 }
 
+// La hora que leen el panel y la fila para la cuenta atrás de 5h/7d.
+export async function marcarHora($: EngineInterface): Promise<void> {
+  const ahora = await $.clock.now()
+  await cambiarAhora($, () => ahora)
+}
+
 // Ocupación y caché tras una respuesta de la conversación principal; avisa al
 // cruzar los umbrales y cuando la caché se invalida.
 export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsage | null = null): Promise<void> {
@@ -47,9 +54,17 @@ export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsa
   $.ui.status(undefined)
   const { context, rateLimits } = await $.session.usage()
   if (context.tokens === undefined || context.percent === undefined) return
+  await marcarHora($)
   const limites: Limite[] = rateLimits
     .filter(l => l.kind in VENTANAS)
-    .map(l => ({ tipo: VENTANAS[l.kind] ?? l.kind, libre: Math.max(0, Math.round(100 - l.percentUsed)) }))
+    .map(l => {
+      const reinicio = l.resetsAt === undefined ? NaN : Date.parse(l.resetsAt)
+      return {
+        tipo: VENTANAS[l.kind] ?? l.kind,
+        libre: Math.max(0, Math.round(100 - l.percentUsed)),
+        ...(Number.isFinite(reinicio) ? { reinicio } : {}),
+      }
+    })
   const anterior = await leerTotal($)
   const entrada = usage === null ? 0 : tokensDe(usage)
   const cache = usage === null || entrada === 0 ? (anterior?.cache ?? null) : Math.round((usage.cache_read_input_tokens / entrada) * 100)

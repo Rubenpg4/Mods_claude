@@ -1,6 +1,6 @@
 {
   "name": "contexto-vivo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Ventana de contexto en directo: panel con reparto navegable, diagnóstico, tendencia, subagentes y llamadas; cifra en la fila del modo y /contexto-top",
   "types": "./types/index.d.ts",
   "userConfig": {
