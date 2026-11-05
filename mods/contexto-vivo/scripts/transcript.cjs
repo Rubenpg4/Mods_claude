@@ -14,6 +14,7 @@
 //   fork    <sesión> <uuid> [título]     una sesión nueva con la cadena hasta uuid
 //   mensajes <sesión> <uuid>             la conversación hasta uuid, simplificada
 //   buscar  <texto> <puntos.json>        busca en las conversaciones de los checkpoints
+//   anclas  <sesión> <uuid…>             cada uuid llevado a su último mensaje
 //
 // Escribe JSON en stdout; ante un error, `{ "error": "…" }` y código 1.
 
@@ -65,9 +66,28 @@ function indexar(registros) {
   for (const r of registros) {
     if (!enCadena(r)) continue
     porUuid.set(r.uuid, r)
-    hoja = r
+    // La punta es el último mensaje de la persona o de Claude. El motor añade
+    // registros de sistema tras cada turno con su propio uuid: si fueran la
+    // punta, la misma conversación tendría uuid distinto según cuándo se mire.
+    if (r.type === 'user' || r.type === 'assistant') hoja = r
   }
   return { porUuid, hoja }
+}
+
+// Para cada uuid, el último mensaje de la persona o de Claude de su cadena.
+function anclas(sesion, uuids) {
+  const { porUuid } = indexar(leer(localizar(sesion)))
+  const mapa = {}
+  for (const u of uuids) {
+    let r = porUuid.get(u)
+    const vistos = new Set()
+    while (r !== undefined && r.type !== 'user' && r.type !== 'assistant' && !vistos.has(r.uuid)) {
+      vistos.add(r.uuid)
+      r = porUuid.get(r.parentUuid ?? r.logicalParentUuid)
+    }
+    if (r !== undefined) mapa[u] = r.uuid
+  }
+  return mapa
 }
 
 // De la raíz a `desde`, siguiendo los padres (también a través de una
@@ -242,6 +262,8 @@ function main() {
       return mensajes(args[0], args[1])
     case 'buscar':
       return buscar(args[0], args[1])
+    case 'anclas':
+      return anclas(args[0], args.slice(1))
     default:
       throw new Error(`orden desconocida: ${orden}`)
   }

@@ -1,7 +1,20 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
-import type { Arbol, Aviso, Consulta, Fila, Foto, Llamada, Pestana, Subagente, Total, Turno } from '../types'
+import type {
+  Aplicado,
+  Arbol,
+  Aviso,
+  Consulta,
+  Fila,
+  Foto,
+  Llamada,
+  Pestana,
+  Selector,
+  Subagente,
+  Total,
+  Turno,
+} from '../types'
 
 // El estado que el panel y la fila de «auto mode on» leen. Cambiar la etiqueta
 // `shape` de un valor si cambian sus campos: lo guardado sobrevive a la recarga.
@@ -73,6 +86,17 @@ const consulta = atom({ plugin: 'contexto-vivo', key: 'consulta' } as const, nul
   // -2: la -1 podía guardar texto con secuencias de escape que el panel rechaza.
   shape: 'consulta-2',
 })
+const selector = atom(
+  { plugin: 'contexto-vivo', key: 'selector' } as const,
+  { desplegado: false, modelo: null, esfuerzo: null } as Selector,
+  // -5: `esfuerzo` vuelve a ser solo lo pulsado a mitad de turno.
+  { shape: 'selector-5' },
+)
+const aplicado = atom(
+  { plugin: 'contexto-vivo', key: 'aplicado' } as const,
+  { modelo: null, esfuerzo: null } as Aplicado,
+  { shape: 'aplicado-1' },
+)
 
 type $ = EngineInterface
 type Cambio<T> = (valor: T) => T
@@ -129,6 +153,9 @@ export function leerMensajes($: $) {
 export function cambiarMensajes($: $, f: Cambio<Fila[]>) {
   return update($, mensajes, f)
 }
+
+// El id del panel del mod.
+export const PANEL = 'contexto-vivo'
 
 export function leerPestana($: $) {
   return read($, pestana)
@@ -226,4 +253,18 @@ export function leerConsulta($: $) {
 }
 export function cambiarConsulta($: $, f: Cambio<Consulta | null>) {
   return update($, consulta, f)
+}
+
+export function leerSelector($: $) {
+  return read($, selector)
+}
+export function cambiarSelector($: $, f: Cambio<Selector>) {
+  return update($, selector, f)
+}
+
+export function leerAplicado($: $) {
+  return read($, aplicado)
+}
+export function cambiarAplicado($: $, f: Cambio<Aplicado>) {
+  return update($, aplicado, f)
 }

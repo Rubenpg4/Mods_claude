@@ -13,6 +13,7 @@ import {
   trasCompactar,
 } from './acciones'
 import {
+  abrirArbolSiToca,
   buscar,
   cargarArbol,
   checkpoint,
@@ -32,7 +33,9 @@ import { leerConfig } from './config'
 import {
   cambiarPestana,
   cambiarUltimoPrompt,
+  cambiarAplicado,
   leerAhora,
+  leerAplicado,
   leerArbol,
   leerFoto,
   leerHead,
@@ -41,13 +44,22 @@ import {
   leerLlamadas,
   leerSubagentes,
   leerTotal,
+  PANEL,
 } from './estado'
 import { dibujarPanel } from './panel'
+import {
+  acabaTurno,
+  comandoModelo,
+  dibujarBanda,
+  empiezaTurno,
+  esNivel,
+  esPropio,
+  soltarEsfuerzo,
+} from './selector'
 
-const PANEL = 'contexto-vivo'
 let tic: Timer | null = null
 
-const ARBOL_VACIO = { version: 1 as const, siguiente: 1, nodos: [], heads: {} }
+const ARBOL_VACIO = { version: 2 as const, siguiente: 1, nodos: [], heads: {}, titulos: {} }
 
 // Contexto vivo: panel /contexto (reparto navegable, diagnóstico, tendencia,
 // subagentes, llamadas y árbol de checkpoints), resumen /contexto-top, los
@@ -91,11 +103,18 @@ export const register: Register = (on, opciones) => {
       description: 'Busca un texto en todos los checkpoints del árbol: /cp-buscar <texto>',
     })
     await $.command.register({
+      name: 'modelo',
+      description: 'Selector de modelo y esfuerzo: /modelo despliega la banda; /modelo sonnet high lo aplica directo',
+      argumentHint: '[fable|opus|sonnet|haiku] [low|medium|high|xhigh|max]',
+    })
+    await $.command.register({
       name: 'cp-exportar',
       description: 'Exporta la conversación de un checkpoint a Markdown: /cp-exportar [id o nombre]',
     })
     const r = await next(e)
     await cargarArbol($).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
+    // Tras restaurar o hacer un fork, la sesión nueva empieza con el árbol abierto.
+    await abrirArbolSiToca($).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
     await cargarIgnorados($)
     await marcarHora($)
     await refrescar($, cfg)
@@ -252,7 +271,19 @@ export const register: Register = (on, opciones) => {
     return ran
   }).catch(($, e, next) => next(e))
 
+  // Mientras hay turno principal, el selector guarda lo pulsado para después.
+  on('turn.start', ($, e, next) => {
+    if (e.agentId === undefined) empiezaTurno()
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // El modelo y el esfuerzo los manda la sesión (/model y /effort, que el
+  // selector cambia): aquí solo se apunta con qué salió cada petición.
   on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined) {
+      await cambiarAplicado($, () => ({ modelo: e.model, esfuerzo: typeof e.effort === 'string' ? e.effort : null }))
+    }
     const respuesta = yield* next(e)
     if (e.agentId === undefined) await refrescar($, cfg, respuesta.usage)
     else if (respuesta.usage !== null) await registrarPaso($, e.agentId, respuesta.usage)
@@ -260,12 +291,68 @@ export const register: Register = (on, opciones) => {
     return respuesta
   })
 
+  // Un /model o /effort escrito a mano: la banda y la fila lo reflejan en el
+  // acto, sin esperar a la próxima petición. No depende de PostModelSwitch,
+  // que otro plugin puede no dejar pasar.
+  on('command.run', { command: 'model' }, async ($, e, next) => {
+    const r = await next(e)
+    const ahora = await $.session.model().catch(() => null)
+    if (ahora !== null) await cambiarAplicado($, a => ({ ...a, modelo: ahora }))
+
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // El del selector se apunta en `aplicarEsfuerzo`; uno escrito a mano además
+  // manda sobre lo que esperaba al final del turno.
+  on('command.run', { command: 'effort' }, async ($, e, next) => {
+    const r = await next(e)
+    const nivel = e.args.trim().toLowerCase()
+    if (esNivel(nivel) && !esPropio('effort', nivel)) {
+      await cambiarAplicado($, a => ({ ...a, esfuerzo: nivel }))
+      await soltarEsfuerzo($)
+    }
+
+    return r
+  }).catch(($, e, next) => next(e))
+
+  // Por si llega: un fallback automático también cambia el modelo.
+  on('classic.PostModelSwitch', async ($, e, next) => {
+    await cambiarAplicado($, a => ({ modelo: e.to_model, esfuerzo: e.effort?.level ?? a.esfuerzo }))
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // /modelo [modelo] [esfuerzo]: sin argumentos despliega la banda.
+  on('command.run', { command: 'modelo' }, async ($, e) => {
+    const texto = await comandoModelo($, e.args)
+
+    return texto === undefined ? {} : { text: texto }
+  })
+
+  // Lo que el motor escribe por los /model y /effort que lanza el selector:
+  // el eco y la salida se dibujan vacíos (lo guardado no cambia).
+  on('ui.render', { component: 'CommandOutput' }, ($, e, next) =>
+    next(esPropio(e.props.command, e.props.args) ? { ...e, props: { ...e.props, text: '' } } : e),
+  )
+  on('ui.render', { component: 'UserMessage' }, ($, e, next) => {
+    const eco = /^\/(model|effort)\s+(\S+)$/.exec(e.props.text.trim())
+    const propio = eco !== null && esPropio(eco[1] ?? '', eco[2] ?? '')
+
+    return next(propio ? { ...e, props: { ...e.props, text: '' } } : e)
+  })
+
+  // La banda del selector, siempre sobre el prompt.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => dibujarBanda($, e, await next(e)))
+
   on('turn.complete', async ($, e, next) => {
     const r = await next(e)
     if (e.agentId !== undefined) {
       await terminarSubagente($, e.agentId)
       return r
     }
+    // Lo pulsado durante el turno, fuera de este hook: el respaldo con
+    // `$.command.run` no puede ejecutarse mientras el turno espera aquí.
+    $.clock.after(10, () => void acabaTurno($))
     await registrarTurno($)
     await fotografiar($)
     if (cfg.autoCheckpoint) {
@@ -299,8 +386,16 @@ export const register: Register = (on, opciones) => {
     const avisos = diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($)).length
     const turnos = tendencia(await leerHistorial($), f, t).turnosRestantes
     const cola = pie(t, turnos, avisos, await leerAhora($))
+    // Modelo y esfuerzo al final de la fila: el modelo de la sesión tal como lo
+    // muestra /model (se lee en cada dibujo, no queda viejo), o el de la última
+    // petición si no se puede leer; el esfuerzo, el del último /effort o petición.
+    const apl = await leerAplicado($)
+    const modelo = (await $.session.model().catch(() => null)) ?? apl.modelo
+    const esfuerzo = apl.esfuerzo
+    const etiqueta = [modelo, esfuerzo].filter(x => x !== null && x !== '').join(' ')
+    const sufijo = etiqueta === '' ? '' : `  ·  ${etiqueta}`
 
-    return next({ ...e, props: { ...e.props, tail: `${e.props.tail ?? ''}${cola}` } })
+    return next({ ...e, props: { ...e.props, tail: `${e.props.tail ?? ''}${cola}${sufijo}` } })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANEL }, async ($, e) => dibujarPanel($, e, cfg))

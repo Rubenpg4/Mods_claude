@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { enLinea, etiquetaNodo, origenEnCadena, pasos } from '../hooks/arbol'
+import { enLinea, etiquetaNodo, filasArbol, fundirDuplicados, origenEnCadena, pasos, soloRuido } from '../hooks/arbol'
 
 // Las 12:00 UTC: 5h reinicia en 2h 14m (lleva el 55 % y ha gastado el 37 %, por
 // debajo del ritmo); 7d en 3d 4h (lleva el 55 % y ha gastado el 60 %, por encima).
@@ -128,6 +128,8 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   on('session.messages', () => ({ value: [] }))
   on('session.id', () => ({ value: 's1' }))
   on('session.root', () => ({ value: '/repo' }))
+  // El modelo que muestra /model: la fila lo lee en cada dibujo.
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('fs.read', () => {
     throw new Error('ENOENT')
   })
@@ -169,7 +171,7 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
     props: { isDraft: false, isWorking: false, hint: 'auto mode on' },
   })
   expect((await fila.find({ type: 'Text' }))?.text).toBe(
-    '  ◕ ctx 75% ▰▰▰▰▰▰▰▰▱▱ 150k/200k  ·  ~1 turno  ·  ◔ 5h 37% ↻ 2h 14m · ◑ 7d 60% ↗  ·  ⚠ 2',
+    '  ◕ ctx 75% ▰▰▰▰▰▰▰▰▱▱ 150k/200k  ·  ~1 turno  ·  ◔ 5h 37% ↻ 2h 14m · ◑ 7d 60% ↗  ·  ⚠ 2  ·  claude-opus-5-5',
   )
   // El tic de cada minuto mueve la cuenta atrás sin esperar a una respuesta.
   await reloj.advance(60_000)
@@ -274,6 +276,208 @@ test('los umbrales salen de /config', { options: { avisoPorcentaje: 40, avisosEm
   await ui.unmount()
 })
 
+test('el selector ejecuta /model y /effort de verdad al pulsar y oculta sus filas', async ($, on) => {
+  const avisos: string[] = []
+  const ejecutados: string[] = []
+  let modelo = 'claude-opus-5-5'
+  const reloj = mock.clock(on, { now: T0 })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('store.get', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', (_, e) => {
+    avisos.push(e.text)
+    return { value: undefined }
+  })
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { tokens: 90000, window: 200000, percent: 45 }, rateLimits: [] },
+  }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.model', () => ({ value: modelo }))
+  on('command.list', () => ({
+    value: [
+      { name: 'model', description: '', source: 'builtin' },
+      { name: 'effort', description: '', source: 'builtin' },
+    ],
+  }))
+  // El motor bajo el plugin: /model cambia el modelo de la sesión.
+  on('command.run', (_, e) => {
+    const { command, args } = e as { command: string; args?: string }
+    ejecutados.push(`/${command} ${args ?? ''}`.trim())
+    if (command === 'model') modelo = args ?? modelo
+    return { text: '' }
+  })
+  on('ui.log', () => ({ value: undefined }))
+  const esfuerzos: unknown[] = []
+  on('turn.step', async function* (_, e) {
+    const { turnId, index, effort } = e as { turnId: string; index: number; effort?: unknown }
+    esfuerzos.push(effort)
+    return { turnId, index, answer: '', toolUses: [], stopReason: 'end_turn', usage: USO(0, 0) }
+  })
+  on('agent.list', () => ({ value: [] }))
+  // El motor dibuja el texto de una fila de comando y nada en la banda.
+  on('ui.render', ($, e) => {
+    const { Box, Text } = $.ui.resolve(e)
+    const texto = (e.props as { text?: unknown }).text
+    return typeof texto === 'string' ? <Text>{texto}</Text> : <Box />
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const banda = await $.ui.mount({
+    plugin: 'contexto-vivo',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  } as never)
+
+  // Plegada: una línea con el modelo de la sesión.
+  expect(await banda.find({ type: 'Text', text: '◆ Opus 5.5' })).toBeDefined()
+  expect(await banda.find({ key: 'selector-modelo-sonnet' })).toBeUndefined()
+
+  // Desplegada: los chips; pulsar Sonnet ejecuta /model y la banda lo refleja.
+  await banda.press({ key: 'selector-desplegar' })
+  await banda.press({ key: 'selector-modelo-sonnet' })
+  expect(ejecutados).toContain('/model claude-sonnet-5-5')
+  expect(await banda.find({ type: 'Text', text: ' ● Sonnet 5.5 ' })).toBeDefined()
+  // Sin avisos emergentes cuando todo va bien: la banda ya lo muestra.
+  expect(avisos).toEqual([])
+  // Mismo ancho activo o no: la fila no se recoloca.
+  expect(await banda.find({ type: 'Text', text: '   Opus 5.5 ' })).toBeDefined()
+
+  // Pulsar un esfuerzo ejecuta el /effort real al momento; las peticiones
+  // salen con lo que tenga la sesión, sin que el mod lo toque.
+  await banda.press({ key: 'selector-esfuerzo-xhigh' })
+  expect(ejecutados.filter(x => x.startsWith('/effort'))).toEqual(['/effort xhigh'])
+  expect(await banda.find({ type: 'Text', text: ' xhigh ', inverse: true } as never)).toBeDefined()
+  expect(await banda.find({ type: 'Text', text: '▰▰▰▰▱' })).toBeDefined()
+  await recorrer($.turn.step({ turnId: 't', index: 0, model: modelo, effort: 'xhigh', messageCount: 1 } as never))
+  expect(esfuerzos).toEqual(['xhigh'])
+
+  // Las filas que el motor escribe por esos comandos salen vacías; las de un
+  // /effort escrito a mano, no.
+  const fila = (command: string, args: string, text: string) =>
+    $.ui.mount({
+      plugin: 'contexto-vivo',
+      surface: 'terminal',
+      component: 'CommandOutput',
+      props: { command, args, text, isErrored: false },
+    } as never)
+  const propia = await fila('effort', 'xhigh', 'Set effort level to xhigh')
+  expect(await propia.find({ type: 'Text', text: /Set effort/ })).toBeUndefined()
+  await propia.unmount()
+  const ajena = await fila('effort', 'low', 'Set effort level to low')
+  expect(await ajena.find({ type: 'Text', text: /Set effort/ })).toBeDefined()
+  await ajena.unmount()
+  const eco = await $.ui.mount({
+    plugin: 'contexto-vivo',
+    surface: 'terminal',
+    component: 'UserMessage',
+    props: { text: '/effort xhigh', origin: { kind: 'plugin', name: 'contexto-vivo' }, isExpanded: false },
+  } as never)
+  expect(await eco.find({ type: 'Text', text: /effort/ })).toBeUndefined()
+  await eco.unmount()
+
+  // Un /model escrito a mano también se refleja.
+  await $.command.run({ command: 'model', args: 'claude-haiku-5-5', origin: { kind: 'human' } } as never)
+  expect(await banda.find({ type: 'Text', text: ' ● Haiku 5.5 ' })).toBeDefined()
+
+  // /modelo con argumentos aplica directo.
+  await $.command.run({ command: 'modelo', args: 'fable low', origin: { kind: 'human' } } as never)
+  await reloj.advance(20)
+  expect(ejecutados).toContain('/model claude-fable-5-1')
+  expect(ejecutados).toContain('/effort low')
+  expect(await banda.find({ type: 'Text', text: ' low ', inverse: true } as never)).toBeDefined()
+
+  // Un /effort escrito a mano también se refleja.
+  await $.command.run({ command: 'effort', args: 'high', origin: { kind: 'human' } } as never)
+  expect(await banda.find({ type: 'Text', text: ' high ', inverse: true } as never)).toBeDefined()
+
+  await banda.press({ key: 'selector-plegar' })
+  expect(await banda.find({ key: 'selector-modelo-sonnet' })).toBeUndefined()
+  await banda.unmount()
+})
+
+test('el selector cambia el modelo por /config y espera al final del turno', async ($, on) => {
+  const ejecutados: string[] = []
+  const ajustes: Record<string, unknown> = {}
+  let modelo = 'claude-opus-5-5'
+  const reloj = mock.clock(on, { now: T0 })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('store.get', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('session.usage', () => ({
+    value: { startedAt: 0, context: { tokens: 90000, window: 200000, percent: 45 }, rateLimits: [] },
+  }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.model', () => ({ value: modelo }))
+  const fila = (key: string, label: string, options: string[]) => ({
+    key,
+    label,
+    kind: 'choice',
+    value: options[0],
+    options,
+    provider: { kind: 'engine' },
+    isLocked: false,
+  })
+  on('config.list', () => ({
+    value: [
+      fila('model', 'Model', ['default', 'claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']),
+      fila('effortLevel', 'Effort', ['low', 'medium', 'high', 'xhigh', 'max']),
+    ],
+  }))
+  on('config.set', (_, e) => {
+    const { key, value } = e as { key: string; value: string }
+    ajustes[key] = value
+    if (key === 'model') modelo = value
+    return { value }
+  })
+  on('command.run', (_, e) => {
+    ejecutados.push((e as { command: string }).command)
+    return { text: '' }
+  })
+  on('turn.start', (_, e) => ({ turnId: (e as { turnId: string }).turnId }) as never)
+  on('turn.complete', () => ({ text: '' }) as never)
+  on('ui.render', ($, e) => {
+    const { Box } = $.ui.resolve(e)
+    return <Box />
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  const banda = await $.ui.mount({
+    plugin: 'contexto-vivo',
+    surface: 'terminal',
+    component: 'AbovePrompt',
+    props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  } as never)
+  await banda.press({ key: 'selector-desplegar' })
+
+  // Sin turno: el modelo se aplica al momento por /config, sin ningún comando;
+  // el esfuerzo, al momento por /effort.
+  await banda.press({ key: 'selector-modelo-haiku' })
+  expect(ajustes).toEqual({ model: 'claude-haiku-5-5' })
+  expect(ejecutados).toEqual([])
+  expect(await banda.find({ type: 'Text', text: ' ● Haiku 5.5 ' })).toBeDefined()
+  await banda.press({ key: 'selector-esfuerzo-low' })
+  expect(ejecutados).toEqual(['effort'])
+  expect(await banda.find({ type: 'Text', text: ' low ', inverse: true } as never)).toBeDefined()
+
+  // Con un turno en marcha: los dos esperan y se aplican al acabar.
+  await $.turn.start({ turnId: 't9' } as never)
+  await banda.press({ key: 'selector-modelo-sonnet' })
+  await banda.press({ key: 'selector-esfuerzo-max' })
+  expect(modelo).toBe('claude-haiku-5-5')
+  expect(ejecutados).toEqual(['effort'])
+  expect(await banda.find({ type: 'Text', text: ' ⧗ Sonnet 5.5 ' })).toBeDefined()
+  await $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't9', reason: 'answer' } as never)
+  await reloj.advance(20)
+  expect(modelo).toBe('claude-sonnet-5-5')
+  expect(ejecutados).toEqual(['effort', 'effort'])
+  expect(await banda.find({ type: 'Text', text: ' ● Sonnet 5.5 ' })).toBeDefined()
+  expect(await banda.find({ type: 'Text', text: ' max ', inverse: true } as never)).toBeDefined()
+  await banda.unmount()
+})
+
 // El motor de juguete del árbol: cada sesión es un transcript de registros
 // enlazados por su padre, como el `.jsonl` de verdad.
 type Registro = { uuid: string; padre: string | null; role: 'user' | 'assistant'; text: string; toolUses: unknown[] }
@@ -328,8 +532,22 @@ test('árbol de checkpoints: guardar, nombrar, restaurar, fork, rewind, comparar
     registro.push(e.text)
     return { value: undefined }
   })
-  on('ui.open', () => ({ value: { isPlaced: false } }))
-  on('store.get', () => ({ value: undefined }))
+  const abiertos: string[] = []
+  on('ui.open', (_, e) => {
+    abiertos.push((e as { id: string }).id)
+    return { value: { isPlaced: false } }
+  })
+  const almacen = new Map<string, unknown>()
+  on('store.get', (_, e) => ({ value: almacen.get((e as { key: string }).key) }))
+  on('store.set', (_, e) => {
+    const { key, value } = e as { key: string; value: unknown }
+    almacen.set(key, value)
+    return { value: undefined }
+  })
+  on('store.delete', (_, e) => {
+    almacen.delete((e as { key: string }).key)
+    return { value: undefined }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.end', () => ({ sessionId: sesion }))
   on('turn.complete', (_, e) => ({ text: (e as { answer: string }).answer }))
@@ -397,6 +615,7 @@ test('árbol de checkpoints: guardar, nombrar, restaurar, fork, rewind, comparar
       return salida({ id, ruta: `C:/x/${id}.jsonl` })
     }
     if (orden === 'mensajes') return salida(mensajes(a, b))
+    if (orden === 'anclas') return salida(Object.fromEntries(argv.slice(4).map(u => [u, u])))
     if (orden === 'buscar') {
       // El script lee la ruta tal cual; el disco de juguete la guarda normalizada.
       const ruta = [...disco.keys()].find(r => normal(r) === normal(b))
@@ -473,6 +692,23 @@ test('árbol de checkpoints: guardar, nombrar, restaurar, fork, rewind, comparar
     claude('v1 y v2', [{ tool_use_id: 't1', tool: 'Read', input: { file_path: 'api.ts' }, text: 'export const v = 2' }]),
   ])
   expect(avisos.at(-1)).toBe('⤺ En base REST · 2 turnos')
+  // La sesión nueva abre el panel en el árbol, ya cargado y con su HEAD, sin
+  // tener que guardar nada; y solo una vez.
+  expect(abiertos).toEqual(['contexto-vivo'])
+  expect(almacen.size).toBe(0)
+  const tras = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await tras.find({ type: 'Text', text: /Árbol · 3 checkpoints/ })).toBeDefined()
+  expect(await tras.find({ type: 'Text', text: /◉ base REST.* ← aquí/ })).toBeDefined()
+  expect(await tras.find({ key: 'arbol-guardar' })).toBeDefined()
+  expect(await tras.find({ type: 'Text', text: /Aún no hay checkpoints/ })).toBeUndefined()
+  await tras.unmount()
+  // Si el mod se reinicia con el /resume, el arranque de la sesión lo abre.
+  almacen.set('arbol-abrir', sesion)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(abiertos).toEqual(['contexto-vivo', 'contexto-vivo'])
+  expect(almacen.size).toBe(0)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(abiertos.length).toBe(2)
   expect(indice().heads.f1).toBe('n2')
   // La sesión de la que se viene no se ha tocado.
   expect(cadena('s1', hoja('s1')).map(r => r.text).at(-1)).toBe('hecho GraphQL')
@@ -607,6 +843,67 @@ test('árbol de checkpoints: guardar, nombrar, restaurar, fork, rewind, comparar
   expect(ordenes).not.toContain(undefined)
 })
 
+test('el camino de la conversación actual nunca queda plegado', () => {
+  const nodo = (id: string, padre: string | null, creado: number) => ({
+    id,
+    padre,
+    creado,
+    sesion: 's',
+    uuid: id,
+    mensajes: 0,
+    turnos: 0,
+    tokens: 0,
+    prompt: '',
+  })
+  // n1 → n2 → n3 (aquí), con una rama corta n1 → n4.
+  const a = { version: 2 as const, siguiente: 5, heads: {}, titulos: {}, nodos: [nodo('n1', null, 1), nodo('n2', 'n1', 2), nodo('n3', 'n2', 3), nodo('n4', 'n1', 4)] }
+  // Sin el camino, n2 (un solo hijo) se plegaría bajo n1.
+  expect(filasArbol(a, 'n3', null, false).map(f => [f.nodo.id, f.plegados])).toEqual([
+    ['n1', 0],
+    ['n2', 0],
+    ['n3', 0],
+    ['n4', 0],
+  ])
+  // Lo que no está en el camino sí se pliega: n4 y n5 son una cadena fuera del
+  // camino, así que n6 aparece bajo n1 con dos plegados.
+  const b = { ...a, siguiente: 7, nodos: [...a.nodos, nodo('n5', 'n4', 5), nodo('n6', 'n5', 6)] }
+  expect(filasArbol(b, 'n3', null, false).map(f => [f.nodo.id, f.plegados])).toEqual([
+    ['n1', 0],
+    ['n2', 0],
+    ['n3', 0],
+    ['n6', 2],
+  ])
+})
+
+test('dos checkpoints en el mismo mensaje se funden en el más antiguo', () => {
+  const nodo = (id: string, padre: string | null, creado: number, uuid: string) => ({
+    id,
+    padre,
+    creado,
+    sesion: 's',
+    uuid,
+    mensajes: 0,
+    turnos: 0,
+    tokens: 0,
+    prompt: '',
+  })
+  // n6 y n7 apuntan a registros distintos del mismo mensaje; n8 cuelga de n7.
+  const a = {
+    version: 2 as const,
+    siguiente: 9,
+    heads: { s: 'n7' },
+    titulos: {},
+    nodos: [nodo('n5', null, 1, 'a'), nodo('n6', 'n5', 2, 'sys1'), nodo('n7', 'n6', 3, 'sys2'), nodo('n8', 'n7', 4, 'b')],
+  }
+  const r = fundirDuplicados(a, new Map([['n6', 'msg'], ['n7', 'msg']]))
+  expect(r.nodos.map(n => [n.id, n.padre, n.uuid])).toEqual([
+    ['n5', null, 'a'],
+    ['n6', 'n5', 'msg'],
+    ['n8', 'n6', 'b'],
+  ])
+  expect(r.heads).toEqual({ s: 'n6' })
+})
+
 test('el padre de un checkpoint es el más profundo de su cadena', async () => {
   const nodo = (id: string, uuid: string, creado: number) => ({
     id,
@@ -644,4 +941,16 @@ test('el texto de la conversación llega al panel sin secuencias de escape', asy
   expect(ps).toEqual([{ prompt: 'arregla el login', respuesta: 'resumen', herramientas: 0 }])
   // Lo guardado por versiones anteriores también sale limpio.
   expect(etiquetaNodo({ turnos: 1, prompt: `${esc}[2mCompacted${esc}[22m` })).toBe('«Compacted»')
+})
+
+test('la respuesta del motor a una interrupción no es un punto nuevo del árbol', () => {
+  const interrumpido = { role: 'user' as const, text: '[Request interrupted by user]', toolUses: [] }
+  const respuesta = { role: 'assistant' as const, text: 'No response requested.', toolUses: [] }
+  expect(soloRuido([respuesta])).toBe(true)
+  expect(soloRuido([respuesta, { ...respuesta, text: ' no response requested ' }])).toBe(true)
+  expect(soloRuido([])).toBe(false)
+  // Lo que escribe la persona o Claude de verdad sí cuenta.
+  expect(soloRuido([interrumpido])).toBe(false)
+  expect(soloRuido([respuesta, claude('vale')])).toBe(false)
+  expect(soloRuido([{ ...respuesta, toolUses: [{ tool: 'Bash' }] }])).toBe(false)
 })

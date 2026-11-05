@@ -151,6 +151,18 @@ export type Arbol = {
 // El último umbral avisado y el `orden` de la última llamada de entonces.
 export type Aviso = { nivel: number; desde: number }
 
+// Un nivel de esfuerzo de `/effort`.
+export type Nivel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+// El selector de modelo y esfuerzo de la banda: si está desplegado y lo pulsado
+// a mitad de turno, que espera al final del turno para aplicarse (`null`: nada
+// pendiente).
+export type Selector = { desplegado: boolean; modelo: string | null; esfuerzo: Nivel | null }
+
+// El modelo y el esfuerzo con que se envió la última petición del turno
+// principal; `null` si aún no ha habido ninguna o el modelo no toma esfuerzo.
+export type Aplicado = { modelo: string | null; esfuerzo: string | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'contexto-vivo': {
@@ -189,6 +201,10 @@ declare module 'claude-code' {
       ocupado: Shaped<string | null>
       // La búsqueda o comparación abierta en la pestaña Árbol.
       consulta: Shaped<Consulta | null>
+      // El selector de modelo y esfuerzo de la banda sobre el prompt.
+      selector: Shaped<Selector>
+      // Lo último enviado al modelo en la conversación principal (fila del modo).
+      aplicado: Shaped<Aplicado>
     }
   }
 }

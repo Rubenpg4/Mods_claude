@@ -1,7 +1,14 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Hallazgo, Llamada, Pestana, Subagente } from '../types'
-import { abrir, cargarMensajes, compactar, fotografiar, ignorar, restaurarIgnorados } from './acciones'
+import {
+  abrir,
+  cargarMensajes,
+  compactar,
+  fotografiar,
+  ignorar,
+  restaurarIgnorados,
+} from './acciones'
 import {
   ancestroComun,
   ancestros,
@@ -77,6 +84,7 @@ import {
   leerTotal,
 } from './estado'
 import { anillo, anilloSvg, columnas, columnasSvg } from './graficos'
+import { selectorEnPanel } from './selector'
 
 type Elemento = (props: Record<string, unknown>) => unknown
 // Lo que el panel necesita del evento `ui.render` del Pane.
@@ -651,7 +659,12 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
     const borrando = await leerBorrando($)
     const consulta = await leerConsulta($)
     const Input = tabla.Input
-    if (arbol === null || arbol.nodos.length === 0) {
+    // Recién empezada la sesión (también tras restaurar) el índice aún no ha
+    // llegado: no es un árbol vacío.
+    if (arbol === null) {
+      return tarjeta('Árbol de checkpoints', [<Text dimColor>Cargando el árbol…</Text>])
+    }
+    if (arbol.nodos.length === 0) {
       return tarjeta('Árbol de checkpoints', [
         <Text dimColor wrap="wrap">
           Aún no hay checkpoints. Se guarda uno al cerrar cada turno; con /cp nombre le pones nombre al punto actual.
@@ -887,6 +900,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   return (
     <Box flexDirection="column">
       {cabecera}
+      {await selectorEnPanel($, tabla, e.surface)}
       {limitesUso}
       {barraPestanas}
       {cuerpo}

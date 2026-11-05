@@ -11,9 +11,11 @@ import {
   cambiarConsulta,
   cambiarHead,
   cambiarOcupado,
+  cambiarPestana,
   cambiarSeleccion,
   leerHead,
   leerTotal,
+  PANEL,
 } from './estado'
 
 // El árbol de checkpoints de la conversación, con la lógica de rewind.
@@ -147,6 +149,64 @@ export function estimar(ms: readonly Guardado[]): number {
   return Math.ceil(caracteres / CARACTERES_POR_TOKEN)
 }
 
+// Aplica los uuid nuevos y funde los nodos que quedan en el mismo mensaje de la
+// misma sesión: se queda el más antiguo; los hijos y el HEAD del fundido pasan a él.
+export function fundirDuplicados(a: Arbol, cambios: Map<string, string>): Arbol {
+  const conUuid = a.nodos.map(n => (cambios.has(n.id) ? { ...n, uuid: cambios.get(n.id) as string } : n))
+  const porClave = new Map<string, Nodo>()
+  const fundido = new Map<string, string>()
+  for (const n of [...conUuid].sort((x, y) => x.creado - y.creado)) {
+    const clave = `${n.sesion}\n${n.uuid}`
+    const previo = porClave.get(clave)
+    if (previo === undefined) porClave.set(clave, n)
+    else fundido.set(n.id, previo.id)
+  }
+  if (fundido.size === 0) return { ...a, nodos: conUuid }
+  const nodos = conUuid
+    .filter(n => !fundido.has(n.id))
+    .map(n => (n.padre !== null && fundido.has(n.padre) ? { ...n, padre: fundido.get(n.padre) as string } : n))
+  const heads = Object.fromEntries(Object.entries(a.heads).map(([s, h]) => [s, fundido.get(h) ?? h]))
+  return { ...a, nodos, heads }
+}
+
+// Los checkpoints guardados antes podían apuntar a un registro de sistema, que
+// cambia de uuid sin cambiar la conversación. Se llevan a su último mensaje y
+// los que quedan iguales se funden.
+async function canonizar($: $, a: Arbol): Promise<Arbol> {
+  const porSesion = new Map<string, Nodo[]>()
+  for (const n of a.nodos) porSesion.set(n.sesion, [...(porSesion.get(n.sesion) ?? []), n])
+  const cambios = new Map<string, string>()
+  for (const [sesion, nodos] of porSesion) {
+    let mapa: Record<string, string>
+    try {
+      mapa = await ayudante<Record<string, string>>($, ['anclas', sesion, ...nodos.map(n => n.uuid)])
+    } catch {
+      // Sin transcript legible el nodo se queda como está.
+      continue
+    }
+    for (const n of nodos) {
+      const ancla = mapa[n.uuid]
+      if (ancla !== undefined && ancla !== n.uuid) cambios.set(n.id, ancla)
+    }
+  }
+  return cambios.size === 0 ? a : fundirDuplicados(a, cambios)
+}
+
+// Lo que el motor escribe al reanudar tras una interrupción, sin que nadie
+// haya hablado: un «No response requested.» de Claude. No es un punto nuevo.
+const RUIDO = /^No response requested\.?$/i
+
+export function soloRuido(ms: readonly Guardado[]): boolean {
+  return ms.length > 0 && ms.every(m => m.role === 'assistant' && m.toolUses.length === 0 && RUIDO.test(m.text.trim()))
+}
+
+// ¿Lo que hay entre el checkpoint `origen` y el mensaje `hasta` es solo ruido?
+async function soloRuidoTras($: $, sesion: string, hasta: string, origen: string): Promise<boolean> {
+  const ms = await ayudante<Guardado[]>($, ['mensajes', sesion, hasta])
+  const i = ms.findIndex(m => m.uuid === origen)
+  return i >= 0 && soloRuido(ms.slice(i + 1))
+}
+
 // Cuántos mensajes tienen en común dos conversaciones desde el principio.
 export function prefijoComun(x: readonly Guardado[], y: readonly Guardado[]): number {
   let i = 0
@@ -241,8 +301,13 @@ export function filasArbol(a: Arbol, head: string | null, seleccion: string | nu
   }
   for (const lista of porPadre.values()) lista.sort((x, y) => x.creado - y.creado)
   const deNodo = (id: string) => porPadre.get(id) ?? []
+  // El camino de la conversación actual (y de la selección) se ve entero: si
+  // un turno atrás quedara plegado, no habría forma de elegirlo ni volver a él.
+  const camino = new Set(
+    [...(head === null ? [] : ancestros(a, head)), ...(seleccion === null ? [] : ancestros(a, seleccion))].map(n => n.id),
+  )
   const visible = (n: Nodo) =>
-    todo || n.nombre !== undefined || n.id === head || n.id === seleccion || deNodo(n.id).length !== 1
+    todo || camino.has(n.id) || n.nombre !== undefined || n.id === head || n.id === seleccion || deNodo(n.id).length !== 1
 
   const filas: FilaArbol[] = []
   const recorrer = (n: Nodo, plegados: number, guia: string, rama: string) => {
@@ -402,13 +467,38 @@ function recortar(a: Arbol): Arbol {
 
 // Al empezar la sesión (también al llegar a ella con /resume): el árbol del
 // proyecto y el HEAD que esta sesión tenga en él.
-export function cargarArbol($: $): Promise<void> {
-  return enCola(async () => {
-    const a = await leerDisco($)
-    const sesion = await $.session.id()
-    await cambiarArbol($, () => a)
-    await cambiarHead($, () => a.heads[sesion] ?? null)
+//
+// El índice se pone en el panel al momento; corregir los checkpoints antiguos
+// lee los transcripts (node, una vez por sesión) y llega después.
+export async function cargarArbol($: $): Promise<void> {
+  const sesion = await $.session.id()
+  await enCola(async () => {
+    const leido = await leerDisco($)
+    await cambiarArbol($, () => leido)
+    await cambiarHead($, h => leido.heads[sesion] ?? h)
   })
+  // En la cola, pero sin esperarla: quien carga no se queda parado.
+  void enCola(async () => {
+    const leido = await leerDisco($)
+    const a = await canonizar($, leido)
+    if (a === leido) return
+    await escribirDisco($, a)
+    await cambiarHead($, h => a.heads[sesion] ?? h)
+  }).catch(error => $.ui.log(`árbol: ${mensajeDe(error)}`, { to: 'debug' }))
+}
+
+// La sesión a la que se acaba de restaurar o hacer fork, en `$.store` para que
+// sobreviva al reinicio del mod con el /resume.
+const CLAVE_ABRIR = 'arbol-abrir'
+
+// Si esta sesión viene de restaurar o de un fork, abre el panel en la pestaña
+// Árbol (una sola vez).
+export async function abrirArbolSiToca($: $): Promise<void> {
+  const pendiente = await $.store.get(CLAVE_ABRIR)
+  if (pendiente === undefined || pendiente !== (await $.session.id())) return
+  await $.store.delete(CLAVE_ABRIR)
+  await cambiarPestana($, () => 'arbol')
+  await $.ui.open({ id: PANEL, title: 'Contexto' })
 }
 
 // Tras /clear la conversación vuelve a estar vacía: el siguiente checkpoint
@@ -421,12 +511,16 @@ async function crearCheckpoint($: $, nombre?: string): Promise<Nodo | null> {
   const sesion = await $.session.id()
   const e = await estadoSesion($, sesion)
   if (e === null || e.uuid === null || e.mensajes === 0) return null
-  const a = await leerDisco($)
+  const a = await canonizar($, await leerDisco($))
   const origen = origenEnCadena(a, e.cadena, a.heads[sesion] ?? (await leerHead($)))
 
   // Nada nuevo desde el checkpoint más cercano: la sesión está en él, y como
-  // mucho se le pone nombre.
-  if (origen !== undefined && origen.uuid === e.uuid) {
+  // mucho se le pone nombre. Lo mismo si lo único que se ha añadido es lo que
+  // el motor escribe al reanudar tras una interrupción.
+  const enOrigen =
+    origen !== undefined &&
+    (origen.uuid === e.uuid || (await soloRuidoTras($, sesion, e.uuid, origen.uuid)))
+  if (origen !== undefined && enOrigen) {
     const actual = nombre === undefined || nombre === origen.nombre ? origen : { ...origen, nombre }
     await escribirDisco($, {
       ...a,
@@ -511,6 +605,9 @@ async function irA($: $, id: string, nombre?: string): Promise<void> {
       })
     })
 
+    // La sesión nueva abre el panel en el árbol al empezar, aunque el mod se
+    // reinicie con el /resume (lo hace `abrirArbolSiToca`).
+    await $.store.set(CLAVE_ABRIR, rama.id)
     await $.command.run({ command: 'resume', args: rama.id })
     if ((await $.session.id()) !== rama.id) {
       $.ui.log(`⑂ La rama está lista en la sesión ${rama.id}: ábrela con /resume ${rama.id} o claude --resume ${rama.id}`)
@@ -521,8 +618,11 @@ async function irA($: $, id: string, nombre?: string): Promise<void> {
     // reescribe en la próxima petición por fuerza (no avisar de ello).
     await olvidarConversacion($)
     marcarCompactado()
+    await cambiarArbol($, () => null)
+    await cargarArbol($)
     await cambiarHead($, () => nodo.id)
     await cambiarSeleccion($, () => nodo.id)
+    await abrirArbolSiToca($)
     await fotografiar($)
     $.ui.toast(fork ? `⑂ Fork «${nombre}» desde ${etiqueta}` : `⤺ En ${etiqueta} · ${turnos(nodo.turnos)}`)
   } catch (error) {
