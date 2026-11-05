@@ -63,6 +63,8 @@ const PESTANAS: [Pestana, string][] = [
   ['llamadas', '≡ Llamadas'],
 ]
 const DIAMETRO = 16
+// Fondo liso de las barras: el gris de los bordes del tema, claro u oscuro.
+const CARRIL = 'subtle'
 
 export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Config): Promise<unknown> {
   const tabla = $.ui.resolve(e as never) as unknown as {
@@ -180,9 +182,9 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         {tramosBarra.map(s => (
           <Text color={s.color}>{'█'.repeat(s.celdas)}</Text>
         ))}
-        <Text dimColor>{'░'.repeat(libres)}</Text>
+        <Text backgroundColor={CARRIL}>{' '.repeat(libres)}</Text>
         <Text color="warning" dimColor>
-          {'▒'.repeat(celdasReserva)}
+          {'█'.repeat(celdasReserva)}
         </Text>
       </Text>
       <Text dimColor wrap="truncate">
@@ -233,10 +235,20 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
                 {barraRitmo(v.usado, v.ritmo, anchoBarraUso).map(tr =>
                   tr.clase === 'usado' ? (
                     <Text color={colorVentana(v)}>{tr.texto}</Text>
-                  ) : tr.clase === 'marca' ? (
-                    <Text weight="bold">{tr.texto}</Text>
+                  ) : tr.clase === 'parcial' ? (
+                    <Text color={colorVentana(v)} backgroundColor={CARRIL}>
+                      {tr.texto}
+                    </Text>
+                  ) : tr.clase === 'marcaUsado' ? (
+                    <Text color="text" backgroundColor={colorVentana(v)}>
+                      {tr.texto}
+                    </Text>
+                  ) : tr.clase === 'marcaLibre' ? (
+                    <Text color="text" backgroundColor={CARRIL}>
+                      {tr.texto}
+                    </Text>
                   ) : (
-                    <Text dimColor>{tr.texto}</Text>
+                    <Text backgroundColor={CARRIL}>{tr.texto}</Text>
                   ),
                 )}
                 <Text color={colorVentana(v)} weight="bold">

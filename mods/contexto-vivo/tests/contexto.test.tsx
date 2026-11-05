@@ -170,8 +170,10 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   // Límites de uso: barra con la marca del ritmo, % usado, reinicio y proyección.
   const limites = await $.ui.mount({ ...PANEL, surface: 'terminal' })
   expect(await limites.find({ type: 'Text', text: /Límites de uso/ })).toBeDefined()
-  expect(await limites.find({ type: 'Text', text: /^5h .*│.* 37 % {2}↻ 2h 13m/ })).toBeDefined()
-  expect(await limites.find({ type: 'Text', text: /^7d .*│.* 60 % {2}↻ 3d 3h/ })).toBeDefined()
+  expect(await limites.find({ type: 'Text', text: /^5h .*▕.* 37 % {2}↻ 2h 13m/ })).toBeDefined()
+  expect(await limites.find({ type: 'Text', text: /^7d .*▕.* 60 % {2}↻ 3d 3h/ })).toBeDefined()
+  // Sin trama: el carril es liso, de color de fondo.
+  expect(await limites.find({ type: 'Text', text: /[░▒]/ })).toBeUndefined()
   expect(await limites.find({ type: 'Text', text: /⚠ 7d: a este ritmo se agota en ~2d 13h/ })).toBeDefined()
   expect(await limites.find({ type: 'Text', text: /no llegas al límite/ })).toBeUndefined()
   await limites.unmount()

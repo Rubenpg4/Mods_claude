@@ -174,10 +174,13 @@ export function peorColor(vs: Ventana[]): string {
   return vs.map(colorVentana).reduce((a, b) => (orden.indexOf(b) > orden.indexOf(a) ? b : a), 'success')
 }
 
-// Un tramo de la barra de uso: lo gastado, lo libre o la marca del ritmo.
-export type Tramo = { clase: 'usado' | 'libre' | 'marca'; texto: string }
+// Un tramo de la barra de uso, que se dibuja sobre un carril de color liso:
+// `usado`, bloques llenos; `parcial`, la celda del borde (un octavo de bloque
+// del color de lo usado sobre el carril); `libre`, carril vacío; la marca del
+// ritmo, una raya fina sobre lo usado o sobre el carril.
+export type Tramo = { clase: 'usado' | 'parcial' | 'libre' | 'marcaUsado' | 'marcaLibre'; texto: string }
 
-// Barra de uso con resolución de octavos y, si hay ritmo, una marca │ donde
+// Barra de uso con resolución de octavos y, si hay ritmo, una marca donde
 // irías al paso del tiempo.
 export function barraRitmo(usado: number, ritmo: number | null, ancho: number): Tramo[] {
   const octavos = Math.round((Math.min(100, Math.max(0, usado)) / 100) * ancho * 8)
@@ -188,12 +191,12 @@ export function barraRitmo(usado: number, ritmo: number | null, ancho: number): 
   for (let i = 0; i < ancho; i++) {
     const celda: Tramo =
       i === marca
-        ? { clase: 'marca', texto: '│' }
+        ? { clase: i < llenas ? 'marcaUsado' : 'marcaLibre', texto: '▕' }
         : i < llenas
           ? { clase: 'usado', texto: '█' }
           : i === llenas && resto > 0
-            ? { clase: 'usado', texto: OCTAVOS[resto] ?? '' }
-            : { clase: 'libre', texto: '░' }
+            ? { clase: 'parcial', texto: OCTAVOS[resto] ?? '' }
+            : { clase: 'libre', texto: ' ' }
     const ultimo = tramos.at(-1)
     if (ultimo !== undefined && ultimo.clase === celda.clase) ultimo.texto += celda.texto
     else tramos.push(celda)
