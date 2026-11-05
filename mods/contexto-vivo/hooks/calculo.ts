@@ -424,7 +424,7 @@ export function pie(t: Total | null, turnos: number | null, avisos: number, ahor
   const restantes = turnos === null ? '' : `  ·  ~${turnos} turno${turnos === 1 ? '' : 's'}`
   const uso = ventanas(t.limites, ahora)
     .map(v => {
-      const reinicio = v.falta !== null && v.falta < DIA ? ` ↻${duracionCorta(v.falta).replace(' ', '')}` : ''
+      const reinicio = v.falta !== null && v.falta < DIA ? ` ↻ ${duracionCorta(v.falta)}` : ''
       return `${sector(v.usado)} ${v.tipo} ${v.usado}%${reinicio}${v.agota === null ? '' : ' ↗'}`
     })
     .join(' · ')

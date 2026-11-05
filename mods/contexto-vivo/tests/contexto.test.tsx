@@ -160,11 +160,11 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
     props: { isDraft: false, isWorking: false, hint: 'auto mode on' },
   })
   expect((await fila.find({ type: 'Text' }))?.text).toBe(
-    '  ◕ ctx 75% ▰▰▰▰▰▰▰▰▱▱ 150k/200k  ·  ~1 turno  ·  ◔ 5h 37% ↻2h14m · ◑ 7d 60% ↗  ·  ⚠ 2',
+    '  ◕ ctx 75% ▰▰▰▰▰▰▰▰▱▱ 150k/200k  ·  ~1 turno  ·  ◔ 5h 37% ↻ 2h 14m · ◑ 7d 60% ↗  ·  ⚠ 2',
   )
   // El tic de cada minuto mueve la cuenta atrás sin esperar a una respuesta.
   await reloj.advance(60_000)
-  expect((await fila.find({ type: 'Text' }))?.text).toContain('◔ 5h 37% ↻2h13m')
+  expect((await fila.find({ type: 'Text' }))?.text).toContain('◔ 5h 37% ↻ 2h 13m')
   await fila.unmount()
 
   // Límites de uso: barra con la marca del ritmo, % usado, reinicio y proyección.
