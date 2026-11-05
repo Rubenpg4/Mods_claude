@@ -40,25 +40,75 @@ function aCeldas(columnas: number, filas: number, pixel: (x: number, y: number) 
   return { columnas, filas, celdas: base64(new Uint8Array(palabras.buffer)) }
 }
 
-// Anillo de quesitos para el terminal, empezando arriba y en sentido horario.
-export function anillo(qs: Quesito[], diametro: number): Celdas {
+// Grosor del anillo: radio del hueco respecto al exterior.
+const HUECO = 0.6
+// Parte mínima de la vuelta que ocupa un quesito, para que no quede en un
+// píxel suelto (la leyenda da la cifra exacta).
+const QUESITO_MINIMO = 0.02
+// Muestras por lado dentro de cada píxel: el píxel toma lo que cubre la mayoría.
+// Impar, para que entre dos colores nunca haya empate (el anillo sale simétrico).
+const MUESTRAS = 5
+
+// Anillo de quesitos para el terminal, empezando arriba y en sentido horario,
+// con `centro` escrito en el hueco. Cada píxel se muestrea MUESTRAS×MUESTRAS
+// veces y se queda con el color mayoritario: bordes y cortes más limpios que
+// mirando solo su centro.
+export function anillo(qs: Quesito[], diametro: number, centro = ''): Celdas {
   const suma = qs.reduce((s, q) => s + q.tokens, 0)
+  const partes = qs.map(q => Math.max(QUESITO_MINIMO, q.tokens / Math.max(1, suma)))
+  const sumaPartes = partes.reduce((s, p) => s + p, 0)
   const cortes: { hasta: number; rgb: number }[] = []
   let acumulado = 0
-  for (const q of qs) {
-    acumulado += q.tokens / Math.max(1, suma)
+  qs.forEach((q, i) => {
+    acumulado += (partes[i] ?? 0) / sumaPartes
     cortes.push({ hasta: acumulado, rgb: q.rgb })
-  }
+  })
   const radio = diametro / 2
-  return aCeldas(diametro, diametro / 2, (x, y) => {
-    const dx = x + 0.5 - radio
-    const dy = y + 0.5 - radio
+  const colorEn = (px: number, py: number): number => {
+    const dx = px - radio
+    const dy = py - radio
     const r = Math.hypot(dx, dy) / radio
-    if (suma <= 0 || r > 1 || r < 0.52) return DEFECTO
+    if (r > 1 || r < HUECO) return DEFECTO
     let angulo = Math.atan2(dx, -dy) / (2 * Math.PI)
     if (angulo < 0) angulo += 1
     return (cortes.find(c => angulo <= c.hasta) ?? cortes.at(-1))?.rgb ?? DEFECTO
+  }
+  const filas = diametro / 2
+  const resultado = aCeldas(diametro, filas, (x, y) => {
+    if (suma <= 0) return DEFECTO
+    const votos = new Map<number, number>()
+    for (let i = 0; i < MUESTRAS; i++) {
+      for (let j = 0; j < MUESTRAS; j++) {
+        const c = colorEn(x + (i + 0.5) / MUESTRAS, y + (j + 0.5) / MUESTRAS)
+        votos.set(c, (votos.get(c) ?? 0) + 1)
+      }
+    }
+    let mejor = DEFECTO
+    let maximo = -1
+    for (const [c, n] of votos) {
+      if (n > maximo) {
+        mejor = c
+        maximo = n
+      }
+    }
+    return mejor
   })
+  if (centro === '' || suma <= 0) return resultado
+  return escribir(resultado, Math.floor(filas / 2), centro)
+}
+
+// Escribe `texto` centrado en una fila de celdas, en el color del terminal.
+function escribir(c: Celdas, fila: number, texto: string): Celdas {
+  const binario = atob(c.celdas)
+  const bytes = new Uint8Array(binario.length)
+  for (let i = 0; i < binario.length; i++) bytes[i] = binario.charCodeAt(i)
+  const palabras = new Uint32Array(bytes.buffer)
+  const letras = [...texto].slice(0, c.columnas)
+  const desde = Math.floor((c.columnas - letras.length) / 2)
+  letras.forEach((letra, i) => {
+    palabras.set([letra.codePointAt(0) ?? 0x20, DEFECTO, DEFECTO], ((fila * c.columnas) + desde + i) * 3)
+  })
+  return { ...c, celdas: base64(new Uint8Array(palabras.buffer)) }
 }
 
 // El mismo anillo en SVG para las superficies que no son el terminal.

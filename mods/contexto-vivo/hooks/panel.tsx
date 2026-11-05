@@ -62,7 +62,10 @@ const PESTANAS: [Pestana, string][] = [
   ['subagentes', '◆ Subagentes'],
   ['llamadas', '≡ Llamadas'],
 ]
-const DIAMETRO = 16
+// El anillo del reparto: diámetro máximo en columnas y lo que necesita como
+// mínimo la leyenda para ir a su lado.
+const DIAMETRO_MAXIMO = 26
+const LEYENDA_MINIMA = 28
 // Fondo liso de las barras: el gris de los bordes del tema, claro u oscuro.
 const CARRIL = 'subtle'
 
@@ -319,8 +322,15 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         </Button>,
       ]
     })
-    const aLaPar = interior >= DIAMETRO + 30
-    const nombreLeyenda = Math.max(6, (aLaPar ? interior - DIAMETRO - 2 : interior) - 15)
+    // El anillo crece con el panel. Diámetros de la forma 4n+2: un número impar
+    // de filas, para que la cifra del hueco quede justo en el centro.
+    const formaAnillo = (n: number) => Math.max(10, n - ((n - 2) % 4 + 4) % 4)
+    // A su lado solo si cabe un anillo de 22 o más; si no, encima de la leyenda.
+    const aLaPar = interior - LEYENDA_MINIMA - 2 >= 22
+    const diametro = aLaPar
+      ? formaAnillo(Math.min(DIAMETRO_MAXIMO, interior - LEYENDA_MINIMA - 2))
+      : formaAnillo(Math.min(DIAMETRO_MAXIMO - 4, interior))
+    const nombreLeyenda = Math.max(6, (aLaPar ? interior - diametro - 2 : interior) - 15)
     const leyenda = items.slice(0, 10).map(q => {
       const contenido = [
         <Text color={css(q.rgb)}>■ </Text>,
@@ -352,7 +362,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
     let grafico: unknown = null
     if (items.length > 0 && e.surface === 'terminal' && tabla.Raster !== undefined) {
       const Raster = tabla.Raster
-      const a = anillo(items, DIAMETRO)
+      const a = anillo(items, diametro, k(sumaItems))
       grafico = <Raster key="anillo" columns={a.columnas} rows={a.filas} cells={a.celdas} />
     } else if (items.length > 0 && tabla.Svg !== undefined) {
       const Svg = tabla.Svg
