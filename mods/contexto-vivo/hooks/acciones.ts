@@ -1,0 +1,284 @@
+import type { EngineInterface, ModelUsage } from 'claude-code'
+
+import type { Foto, Limite, Llamada, Total } from '../types'
+import {
+  CARACTERES_POR_TOKEN,
+  CATEGORIAS,
+  corta,
+  etiquetar,
+  k,
+  nombreHerramienta,
+  ordenar,
+  sector,
+  VENTANAS,
+} from './calculo'
+import type { Config } from './config'
+import {
+  cambiarAviso,
+  cambiarConfirmar,
+  cambiarFoto,
+  cambiarHistorial,
+  cambiarIgnorados,
+  cambiarLlamadas,
+  cambiarMensajes,
+  cambiarSubagentes,
+  cambiarTotal,
+  leerAviso,
+  leerConservar,
+  leerLlamadas,
+  leerSubagentes,
+  leerTotal,
+  leerUltimoPrompt,
+} from './estado'
+
+const CLAVE_IGNORADOS = 'ignorados'
+
+// Tras compactar, la primera petición reescribe la caché por fuerza: no avisar.
+const marcas = { recienCompactado: false }
+
+function tokensDe(usage: ModelUsage): number {
+  return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
+}
+
+// Ocupación y caché tras una respuesta de la conversación principal; avisa al
+// cruzar los umbrales y cuando la caché se invalida.
+export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsage | null = null): Promise<void> {
+  // La cifra va en la fila de «auto mode on»: nada en la línea de estado.
+  $.ui.status(undefined)
+  const { context, rateLimits } = await $.session.usage()
+  if (context.tokens === undefined || context.percent === undefined) return
+  const limites: Limite[] = rateLimits
+    .filter(l => l.kind in VENTANAS)
+    .map(l => ({ tipo: VENTANAS[l.kind] ?? l.kind, libre: Math.max(0, Math.round(100 - l.percentUsed)) }))
+  const anterior = await leerTotal($)
+  const entrada = usage === null ? 0 : tokensDe(usage)
+  const cache = usage === null || entrada === 0 ? (anterior?.cache ?? null) : Math.round((usage.cache_read_input_tokens / entrada) * 100)
+  const ahora: Total = {
+    tokens: context.tokens,
+    ventana: context.window,
+    porcentaje: context.percent,
+    limites,
+    cache,
+    cacheEscrito: usage?.cache_creation_input_tokens ?? anterior?.cacheEscrito ?? 0,
+  }
+  await cambiarTotal($, () => ahora)
+
+  if (usage !== null) {
+    const invalidada =
+      !marcas.recienCompactado &&
+      (anterior?.cache ?? 0) >= 80 &&
+      cache !== null &&
+      cache < 50 &&
+      ahora.cacheEscrito >= 20000
+    marcas.recienCompactado = false
+    if (invalidada && cfg.emergentes) {
+      $.ui.toast(`⟲ Caché invalidada: se reescribieron ≈${k(ahora.cacheEscrito)} tokens (caché ${cache} %)`)
+    }
+  }
+
+  const previo = await leerAviso($)
+  const nivel = [cfg.aviso, cfg.critico].filter(u => ahora.porcentaje >= u).at(-1) ?? 0
+  if (nivel === previo.nivel) return
+
+  const lista = await leerLlamadas($)
+  const ultima = lista.at(-1)?.orden ?? 0
+  await cambiarAviso($, () => ({ nivel, desde: nivel > previo.nivel ? ultima : previo.desde }))
+  if (nivel < previo.nivel || !cfg.emergentes) return
+
+  const [peor] = ordenar(
+    lista.filter(l => l.orden > previo.desde).map(l => ({
+      nombre: `${nombreHerramienta(l.herramienta)} ${l.etiqueta}`.trim(),
+      tokens: l.tokens,
+    })),
+    1,
+  )
+  const detalle = peor === undefined ? '' : ` · lo que más ha pesado: ${peor.nombre.slice(0, 60)} (≈${k(peor.tokens)})`
+  $.ui.toast(`${sector(ahora.porcentaje)} Contexto al ${ahora.porcentaje} % (${k(ahora.tokens)}/${k(ahora.ventana)})${detalle}`)
+}
+
+// El desglose de /context: `summary` lo estima en local, sin llamadas a la API;
+// `full` cuenta con la API cada herramienta y fichero, como /context.
+export async function fotografiar($: EngineInterface, detalle: 'summary' | 'full' = 'summary'): Promise<void> {
+  const { context } = await $.session.usage({ breakdown: detalle })
+  const b = context.breakdown
+  if (b === undefined) return
+
+  const porServidor = new Map<string, number>()
+  for (const t of b.mcpTools) {
+    if (t.isLoaded) porServidor.set(t.serverName, (porServidor.get(t.serverName) ?? 0) + t.tokens)
+  }
+  const nueva: Foto = {
+    tokens: b.totalTokens,
+    ventana: b.rawMaxTokens,
+    porcentaje: b.percentage,
+    compacta: b.isAutoCompactEnabled ? (b.autoCompactThreshold ?? null) : null,
+    exacto: detalle === 'full',
+    categorias: b.categories
+      .filter(c => c.kind !== 'deferred')
+      .map(c => ({ nombre: CATEGORIAS[c.name] ?? c.name, tokens: c.tokens, color: c.color, tipo: c.kind })),
+    memoria: b.memoryFiles.map(f => ({ nombre: corta(f.path), tokens: f.tokens, ruta: f.path })),
+    mcp: [...porServidor].map(([nombre, tokens]) => ({ nombre, tokens })),
+    // Solo las cargadas: las diferidas no ocupan la ventana hasta que se buscan.
+    mcpHerramientas: b.mcpTools
+      .filter(t => t.isLoaded)
+      .map(t => ({ nombre: t.name.split('__').slice(2).join('__') || t.name, tokens: t.tokens, grupo: t.serverName })),
+    skills: (b.skills?.skillFrontmatter ?? []).map(s => ({
+      nombre: s.name,
+      tokens: s.tokens,
+      nota: s.pluginName ?? s.source,
+    })),
+    agentes: b.agents.map(a => ({ nombre: a.agentType, tokens: a.tokens })),
+  }
+  await cambiarFoto($, () => nueva)
+}
+
+// Lo que la conversación principal acaba de recibir de una herramienta.
+export async function registrarLlamada(
+  $: EngineInterface,
+  cfg: Config,
+  herramienta: string,
+  id: string,
+  entrada: Record<string, unknown>,
+  texto: string,
+): Promise<void> {
+  const ruta = typeof entrada.file_path === 'string' ? entrada.file_path : undefined
+  const tokens = Math.ceil(texto.length / CARACTERES_POR_TOKEN)
+  const lista: Llamada[] = await cambiarLlamadas($, previa => [
+    ...previa.slice(-299),
+    {
+      id,
+      orden: (previa.at(-1)?.orden ?? 0) + 1,
+      herramienta,
+      etiqueta: etiquetar(entrada).slice(0, 120),
+      tokens,
+      ruta,
+      parcial: entrada.offset !== undefined || entrada.limit !== undefined,
+    },
+  ])
+  if (!cfg.emergentes) return
+  // Avisos inmediatos solo en los casos graves.
+  if (herramienta === 'Read' && ruta !== undefined) {
+    const veces = lista.filter(l => l.herramienta === 'Read' && l.ruta === ruta).length
+    if (veces === 3) $.ui.toast(`⚠ ${corta(ruta)} leído 3 veces en esta conversación`)
+  }
+  if (tokens >= cfg.golpe) {
+    $.ui.toast(`⚠ ${nombreHerramienta(herramienta)} ${etiquetar(entrada).slice(0, 50)} añadió ≈${k(tokens)} de golpe`)
+  }
+}
+
+// Apunta el turno que acaba de cerrar la conversación principal.
+export async function registrarTurno($: EngineInterface): Promise<void> {
+  const t = await leerTotal($)
+  if (t === null) return
+  const prompt = await leerUltimoPrompt($)
+  await cambiarHistorial($, turnos => {
+    const previo = turnos.at(-1)
+    return [
+      ...turnos.slice(-119),
+      {
+        n: (previo?.n ?? 0) + 1,
+        tokens: t.tokens,
+        porcentaje: t.porcentaje,
+        delta: previo === undefined ? 0 : t.tokens - previo.tokens,
+        prompt,
+        cache: t.cache,
+      },
+    ]
+  })
+}
+
+// Lo lleno que va la ventana de un subagente tras cada una de sus peticiones.
+// Las bifurcaciones internas del motor (compactación, memoria) no salen en
+// `$.agent.list()` y se ignoran.
+export async function registrarPaso($: EngineInterface, agentId: string, usage: ModelUsage): Promise<void> {
+  const tokens = tokensDe(usage)
+  const conocidos = await leerSubagentes($)
+  let datos = conocidos.find(a => a.id === agentId)
+  if (datos === undefined) {
+    const agente = (await $.agent.list()).find(a => a.id === agentId)
+    if (agente === undefined) return
+    datos = { id: agentId, tipo: agente.type, descripcion: agente.description, tokens: 0, pico: 0, pasos: 0, activo: true }
+  }
+  const nuevo = { ...datos, tokens, pico: Math.max(datos.pico, tokens), pasos: datos.pasos + 1, activo: true }
+  await cambiarSubagentes($, lista =>
+    lista.some(a => a.id === agentId) ? lista.map(a => (a.id === agentId ? nuevo : a)) : [...lista, nuevo].slice(-12),
+  )
+}
+
+export async function terminarSubagente($: EngineInterface, agentId: string): Promise<void> {
+  await cambiarSubagentes($, lista => lista.map(a => (a.id === agentId ? { ...a, activo: false } : a)))
+}
+
+export async function reiniciar($: EngineInterface): Promise<void> {
+  await cambiarLlamadas($, () => [])
+  await cambiarAviso($, () => ({ nivel: 0, desde: 0 }))
+  await cambiarTotal($, () => null)
+  await cambiarConfirmar($, () => false)
+}
+
+export function marcarCompactado(): void {
+  marcas.recienCompactado = true
+}
+
+// Compacta con lo que la persona pidió conservar; el resultado, en un aviso.
+export async function compactar($: EngineInterface): Promise<void> {
+  await cambiarConfirmar($, () => false)
+  const instrucciones = (await leerConservar($)).trim()
+  const r = await $.session.compact(instrucciones === '' ? {} : { instructions: instrucciones })
+  if ('skip' in r && r.skip !== undefined) {
+    $.ui.toast(`No se compactó: ${String(r.skip)}`)
+    return
+  }
+  const antes = r.tokensBefore === undefined ? '' : ` ${k(r.tokensBefore)}`
+  const despues = r.tokensAfter === undefined ? '' : ` → ${k(r.tokensAfter)}`
+  $.ui.toast(`⇣ Conversación compactada${antes}${despues}`)
+}
+
+// Los hallazgos ignorados se guardan entre sesiones.
+export async function cargarIgnorados($: EngineInterface): Promise<void> {
+  const guardados = await $.store.get(CLAVE_IGNORADOS)
+  if (Array.isArray(guardados)) {
+    const claves = guardados.filter((x): x is string => typeof x === 'string')
+    await cambiarIgnorados($, () => claves)
+  }
+}
+
+export async function ignorar($: EngineInterface, clave: string): Promise<void> {
+  const claves = await cambiarIgnorados($, lista => (lista.includes(clave) ? lista : [...lista, clave].slice(-200)))
+  await $.store.set(CLAVE_IGNORADOS, claves)
+}
+
+export async function restaurarIgnorados($: EngineInterface): Promise<void> {
+  await cambiarIgnorados($, () => [])
+  await $.store.delete(CLAVE_IGNORADOS)
+}
+
+// Abre un fichero en VS Code. En Windows `code` es un .cmd que solo arranca a
+// través de cmd, así que la ruta no puede llevar caracteres que cmd interprete.
+export async function abrir($: EngineInterface, ruta: string): Promise<void> {
+  try {
+    await $.process.run(['code', ruta])
+    return
+  } catch {
+    // Sigue con cmd.
+  }
+  if (/[&|<>^"%!]/.test(ruta)) {
+    $.ui.toast(`No se abre ${corta(ruta)}: la ruta tiene caracteres especiales`)
+    return
+  }
+  try {
+    await $.process.run(['cmd', '/c', 'code', ruta])
+  } catch {
+    $.ui.toast('No se encontró el comando code de VS Code')
+  }
+}
+
+// Los mensajes más largos tuyos y del modelo, sin los resultados de herramientas.
+export async function cargarMensajes($: EngineInterface): Promise<void> {
+  const todos = await $.session.messages()
+  const filas = todos.map(m => ({
+    nombre: `${m.role === 'user' ? 'Tú' : 'Claude'}: ${m.text.replace(/\s+/g, ' ').trim().slice(0, 70)}`,
+    tokens: Math.ceil(m.text.length / CARACTERES_POR_TOKEN),
+  }))
+  await cambiarMensajes($, () => ordenar(filas, 20))
+}

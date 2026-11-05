@@ -1,0 +1,11 @@
+# Tipos del SDK que genera Claude Code (no se versionan)
+.claude-plugin/types/
+
+# Dependencias y artefactos
+node_modules/
+dist/
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db

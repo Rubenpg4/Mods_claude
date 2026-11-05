@@ -1,0 +1,74 @@
+{
+  "name": "contexto-vivo",
+  "version": "0.2.0",
+  "description": "Ventana de contexto en directo: panel con reparto navegable, diagnóstico, tendencia, subagentes y llamadas; cifra en la fila del modo y /contexto-top",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "avisoPorcentaje": {
+      "type": "number",
+      "title": "Aviso de contexto (%)",
+      "description": "Porcentaje de la ventana a partir del que la barra pasa a ámbar y salta el primer aviso",
+      "default": 70
+    },
+    "criticoPorcentaje": {
+      "type": "number",
+      "title": "Alerta de contexto (%)",
+      "description": "Porcentaje de la ventana a partir del que la barra pasa a rojo y salta el segundo aviso",
+      "default": 85
+    },
+    "avisosEmergentes": {
+      "type": "boolean",
+      "title": "Avisos emergentes",
+      "description": "Avisos al cruzar los umbrales, al releer un fichero por tercera vez, al añadir mucho de golpe y al invalidarse la caché",
+      "default": true
+    },
+    "limiteLectura": {
+      "type": "number",
+      "title": "Diagnóstico: lectura entera (tokens)",
+      "description": "Tokens a partir de los que una lectura completa sin offset/limit se señala",
+      "default": 6000
+    },
+    "limiteBash": {
+      "type": "number",
+      "title": "Diagnóstico: salida de Bash (tokens)",
+      "description": "Tokens a partir de los que la salida de Bash o PowerShell se señala",
+      "default": 5000
+    },
+    "limiteMcp": {
+      "type": "number",
+      "title": "Diagnóstico: respuesta MCP (tokens)",
+      "description": "Tokens a partir de los que la respuesta de una herramienta MCP se señala",
+      "default": 8000
+    },
+    "limiteSubagente": {
+      "type": "number",
+      "title": "Diagnóstico: informe de subagente (tokens)",
+      "description": "Tokens a partir de los que el informe que devuelve un subagente se señala",
+      "default": 6000
+    },
+    "limiteOtra": {
+      "type": "number",
+      "title": "Diagnóstico: otras herramientas (tokens)",
+      "description": "Tokens a partir de los que el resultado de Grep, WebFetch u otras se señala",
+      "default": 8000
+    },
+    "limiteMemoria": {
+      "type": "number",
+      "title": "Diagnóstico: fichero de memoria (tokens)",
+      "description": "Tokens a partir de los que un CLAUDE.md, regla o memoria se señala (grave al doble)",
+      "default": 4000
+    },
+    "limiteMcpCargado": {
+      "type": "number",
+      "title": "Diagnóstico: herramientas MCP cargadas (tokens)",
+      "description": "Tokens de esquemas MCP cargados a partir de los que se señala",
+      "default": 20000
+    },
+    "limiteGolpe": {
+      "type": "number",
+      "title": "Aviso por golpe (tokens)",
+      "description": "Tokens que una sola llamada debe añadir para avisar al momento y marcarse como grave",
+      "default": 15000
+    }
+  }
+}
