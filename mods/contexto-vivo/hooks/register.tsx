@@ -1,13 +1,24 @@
 import type { Register, Timer } from 'claude-code'
 
+import { buscar, comparar, exportar, informeArbol, informeBusqueda, informeComparacion } from './arbol/consultas'
+import { etiquetaNodo, resolver } from './arbol/modelo'
 import {
-  apuntarLimites,
-  cargarIgnorados,
-  cargarLimites,
+  abrirArbolSiToca,
+  cargarArbol,
+  checkpoint,
+  forkear,
+  recargarArbol,
+  restaurar,
+  verArbolEntero,
+} from './arbol/operaciones'
+import { arrancarVigia, soltarHead } from './arbol/rewind'
+import { enLinea } from './comun/formato'
+import { diagnosticar } from './contexto/diagnostico'
+import { cargarIgnorados } from './contexto/ignorados'
+import { informe, pie } from './contexto/informes'
+import { apuntarLimites, cargarLimites, horaVisible, limitesVisibles, marcarHora } from './contexto/limites'
+import {
   fotografiar,
-  horaVisible,
-  limitesVisibles,
-  marcarHora,
   olvidarConversacion,
   refrescar,
   registrarLlamada,
@@ -15,53 +26,25 @@ import {
   registrarTurno,
   terminarSubagente,
   trasCompactar,
-} from './acciones'
+} from './contexto/medicion'
+import { tendencia } from './contexto/tendencia'
+import { leerArbol, leerHead } from './estado/arbol'
 import {
-  abrirArbolSiToca,
-  arrancarVigia,
-  buscar,
-  cargarArbol,
-  checkpoint,
-  comparar,
-  etiquetaNodo,
-  exportar,
-  forkear,
-  informeArbol,
-  informeBusqueda,
-  informeComparacion,
-  recargarArbol,
-  resolver,
-  restaurar,
-  soltarHead,
-  verArbolEntero,
-} from './arbol'
-import { diagnosticar, enLinea, informe, pie, tendencia } from './calculo'
-import { leerConfig } from './config'
-import {
-  cambiarPestana,
   cambiarUltimoPrompt,
-  cambiarAplicado,
-  leerAplicado,
-  leerArbol,
   leerFoto,
-  leerHead,
   leerHistorial,
   leerIgnorados,
   leerLlamadas,
   leerSubagentes,
   leerTotal,
-  PANEL,
-} from './estado'
+} from './estado/contexto'
+import { cambiarPestana, PANEL } from './estado/panel'
+import { cambiarAplicado, leerAplicado } from './estado/selector'
+import { acabaTurno, comandoModelo, empiezaTurno, esPropio, soltarEsfuerzo } from './selector/aplicar'
+import { dibujarBanda } from './selector/banda'
+import { esNivel } from './selector/modelos'
+import { leerConfig } from './config'
 import { dibujarPanel } from './panel'
-import {
-  acabaTurno,
-  comandoModelo,
-  dibujarBanda,
-  empiezaTurno,
-  esNivel,
-  esPropio,
-  soltarEsfuerzo,
-} from './selector'
 
 let tic: Timer | null = null
 

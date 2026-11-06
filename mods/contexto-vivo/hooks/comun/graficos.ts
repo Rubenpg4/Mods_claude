@@ -1,6 +1,10 @@
-import type { Quesito, Turno } from '../types'
-import type { Config } from './config'
-import { css, rgbNivel } from './calculo'
+import type { Quesito, Turno } from '../../types'
+
+import type { Config } from '../config'
+import { css, rgbNivel } from './colores'
+
+// Gráficos del panel: el anillo del reparto y las columnas de la tendencia, en
+// celdas de Raster (terminal) o en SVG (escritorio). Puro.
 
 // Color «por defecto del terminal» de una celda de Raster.
 const DEFECTO = 0x01000000

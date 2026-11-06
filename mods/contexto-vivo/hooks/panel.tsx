@@ -1,105 +1,74 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Hallazgo, Llamada, Pestana, Subagente } from '../types'
-import {
-  abrir,
-  cargarMensajes,
-  compactar,
-  fotografiar,
-  horaVisible,
-  ignorar,
-  limitesVisibles,
-  resolverConIA,
-  restaurarIgnorados,
-} from './acciones'
+import { consultarBusqueda, consultarComparacion, exportarConAviso } from './arbol/consultas'
 import {
   ancestroComun,
   ancestros,
   borrables,
+  buscarNodo,
+  descendientes,
+  etiquetaNodo,
+  filasArbol,
+  hijos,
+  turnos as nTurnos,
+  rewindDe,
+  TODO_EL_ARBOL,
+} from './arbol/modelo'
+import {
   borrarAbandonados,
   borrarRama,
-  buscarNodo,
   checkpoint,
   conservarAbandonados,
-  consultarBusqueda,
-  consultarComparacion,
-  descendientes,
-  enLinea,
-  etiquetaNodo,
-  exportarConAviso,
-  filasArbol,
   forkear,
-  hijos,
   injertar,
   limpiarArbol,
   nombrar,
   restaurar,
-  rewindDe,
-  TODO_EL_ARBOL,
-  turnos as nTurnos,
-} from './arbol'
-import {
-  barraFina,
-  barraRitmo,
-  CARRIL,
-  chispa,
-  colorCache,
-  colorNivel,
-  colorVentana,
-  css,
-  diagnosticar,
-  duracionCorta,
-  encima,
-  entradas,
-  familia,
-  FONDO_ENCIMA,
-  GRIS,
-  k,
-  nombreHerramienta,
-  ordenar,
-  PALETA,
-  peorColor,
-  quesitos,
-  sector,
-  segmentos,
-  SIN_DETALLE,
-  sinInvertir,
-  tendencia,
-  ventanas,
-} from './calculo'
-import type { Config } from './config'
+} from './arbol/operaciones'
+import { barraFina, barraRitmo, chispa, sector, segmentos } from './comun/barras'
+import { colorCache, colorNivel, css, familia, GRIS, PALETA } from './comun/colores'
+import { abrir } from './comun/entorno'
+import { CARRIL, encima, FONDO_ENCIMA, sinInvertir } from './comun/estilo'
+import { duracionCorta, enLinea, k, nombreHerramienta, ordenar } from './comun/formato'
+import { anillo, anilloSvg, columnas, columnasSvg } from './comun/graficos'
+import { diagnosticar } from './contexto/diagnostico'
+import { ignorar, restaurarIgnorados } from './contexto/ignorados'
+import { colorVentana, horaVisible, limitesVisibles, peorColor, ventanas } from './contexto/limites'
+import { cargarMensajes, compactar, fotografiar } from './contexto/medicion'
+import { entradas, quesitos, SIN_DETALLE } from './contexto/reparto'
+import { tendencia } from './contexto/tendencia'
 import {
   cambiarBorrando,
-  cambiarConfirmar,
   cambiarConsulta,
-  leerConsulta,
-  cambiarConservar,
-  cambiarNavegacion,
-  cambiarPestana,
   cambiarRestaurando,
   cambiarSeleccion,
   cambiarVerTodo,
   leerArbol,
   leerBorrando,
-  leerRestaurando,
+  leerConsulta,
   leerHead,
   leerOcupado,
+  leerRestaurando,
   leerSeleccion,
   leerVerTodo,
+} from './estado/arbol'
+import { leerFoto, leerHistorial, leerIgnorados, leerLlamadas, leerSubagentes, leerTotal } from './estado/contexto'
+import {
+  cambiarConfirmar,
+  cambiarConservar,
+  cambiarNavegacion,
+  cambiarPestana,
   leerConfirmar,
   leerConservar,
-  leerFoto,
-  leerHistorial,
-  leerIgnorados,
-  leerLlamadas,
   leerMensajes,
   leerNavegacion,
   leerPestana,
-  leerSubagentes,
-  leerTotal,
-} from './estado'
-import { anillo, anilloSvg, columnas, columnasSvg } from './graficos'
-import { modeloDe, selectorEnPanel } from './selector'
+} from './estado/panel'
+import { resolverConIA } from './ia/lanzar'
+import { selectorEnPanel } from './selector/banda'
+import { modeloDe } from './selector/modelos'
+import type { Config } from './config'
 
 type Elemento = (props: Record<string, unknown>) => unknown
 // Lo que el panel necesita del evento `ui.render` del Pane.

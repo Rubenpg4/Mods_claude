@@ -1,0 +1,102 @@
+import type { Hallazgo, TipoHallazgo } from '../../types'
+
+import { k } from '../comun/formato'
+
+// Resolver con IA, la parte pura: el informe en Markdown de un hallazgo, el
+// encargo según su tipo y los nombres de la sesión y del fichero.
+//
+// Un hallazgo se lleva a una sesión aparte de Claude Code (Sonnet, esfuerzo
+// alto): el informe en Markdown con lo detectado y las pruebas, y un encargo
+// según el tipo. La sesión arranca en el proyecto y lee el informe.
+
+export const MODELO_IA = 'sonnet'
+export const ESFUERZO_IA = 'high'
+
+const ENCARGOS: Record<TipoHallazgo, string> = {
+  relectura:
+    'El mismo fichero se ha leído varias veces en la misma conversación. Averigua por qué hace falta releerlo (¿es muy largo?, ¿cambia a menudo?, ¿falta un índice?) y propón cómo evitarlo: dividirlo, añadirle un índice o resumen al principio, o una instrucción en CLAUDE.md para leerlo por secciones.',
+  lectura:
+    'Un fichero grande se ha leído entero de una vez. Revísalo y propón cómo hacer que se lea por partes: dividirlo, añadir un índice con las secciones y sus líneas, o una regla en CLAUDE.md para usar offset/limit o Grep con él.',
+  bash:
+    'Un comando ha volcado una salida enorme en la conversación. Propón la versión filtrada del mismo comando (flags de salida breve, head/tail, grep, --quiet, formatos compactos) y, si se usa a menudo, una regla en CLAUDE.md o un script del proyecto que lo deje en una salida corta.',
+  mcp:
+    'Una herramienta MCP ha devuelto una respuesta muy grande. Según sus argumentos y el comienzo de la respuesta, propón cómo pedir menos: paginación, límites, filtros o solo los campos necesarios. Si conviene, redacta una regla para CLAUDE.md con la forma correcta de llamarla.',
+  subagente:
+    'Un subagente ha devuelto un informe muy largo que entra entero en la conversación principal. Reescribe el encargo para que devuelva solo la conclusión (con un formato y una extensión máximos) y, si es un tipo de agente propio, propón el cambio en su definición.',
+  otra:
+    'Una herramienta ha devuelto un resultado muy grande. Propón cómo acotar la llamada (rutas, patrones, límites de resultados) y, si se repite, una regla en CLAUDE.md para hacerlo así siempre.',
+  memoria:
+    'Un fichero de memoria se carga entero en cada petición. Léelo y propón cómo recortarlo sin perder lo importante: qué sobra, qué se puede condensar y qué conviene mover a reglas por carpeta (.claude/rules), a skills o a documentación que se lea solo cuando haga falta.',
+  'mcp-cargado':
+    'Los esquemas de las herramientas MCP ocupan mucho en cada petición. Ayúdame a decidir qué servidores no hacen falta en este proyecto y cómo desactivarlos solo aquí (settings del proyecto, .mcp.json, permisos), sin perder los que sí uso.',
+}
+
+export type ContextoIA = {
+  fecha: string
+  proyecto: string
+  sesion: string
+  // Ocupación de la sesión cuando se detectó, si se conoce.
+  ventana?: number
+  porcentaje?: number
+}
+
+// El informe que lee la sesión aparte: qué pasa, pruebas, consejo y encargo.
+export function informeIA(h: Hallazgo, c: ContextoIA): string {
+  const peso =
+    c.ventana === undefined || c.ventana <= 0
+      ? `≈${k(h.tokens)} tokens`
+      : `≈${k(h.tokens)} tokens (${((h.tokens / c.ventana) * 100).toFixed(1)} % de una ventana de ${k(c.ventana)})`
+  const lineas = [
+    `# Problema de contexto: ${h.texto}`,
+    '',
+    `Detectado por el diagnóstico del mod contexto-vivo en otra sesión de Claude Code (${c.sesion}) el ${c.fecha}.`,
+    `Proyecto: ${c.proyecto}`,
+    ...(c.porcentaje === undefined ? [] : [`Ocupación de aquella sesión al detectarlo: ${c.porcentaje} %`]),
+    '',
+    '## Qué pasa',
+    '',
+    `- Gravedad: ${h.gravedad}`,
+    `- Tipo: ${h.tipo}`,
+    `- Coste: ${peso}`,
+    ...(h.ruta === undefined ? [] : [`- Fichero: ${h.ruta}`]),
+    ...(h.herramienta === undefined ? [] : [`- Herramienta: ${h.herramienta}`]),
+    '',
+    '## Pruebas',
+    '',
+    ...h.pruebas.map(p => `- ${p}`),
+  ]
+  if (h.muestra !== undefined && h.muestra.trim() !== '') {
+    lineas.push('', 'Comienzo del resultado:', '', '```', h.muestra.replace(/```/g, "'''"), '```')
+  }
+  lineas.push(
+    '',
+    '## Consejo del diagnóstico',
+    '',
+    h.consejo,
+    '',
+    '## Lo que te pido',
+    '',
+    ENCARGOS[h.tipo],
+    '',
+    'No continúes la tarea de aquella sesión: el objetivo es que este problema no vuelva a pasar. Mira los ficheros del proyecto que haga falta, explícame la causa en pocas líneas y, antes de cambiar ningún fichero, enséñame el cambio y espera a que lo apruebe.',
+  )
+  return lineas.join('\n')
+}
+
+// El primer mensaje de la sesión aparte. Sin comillas, `;`, `&`, `%` ni otros
+// caracteres que Windows Terminal o cmd interpretan.
+export function promptIA(ruta: string): string {
+  return `Lee el informe ${ruta} y ayúdame a resolver el problema de contexto que describe, siguiendo lo que pide.`
+}
+
+// Nombre de la sesión aparte (claude -n), sin caracteres conflictivos.
+export function tituloIA(h: Hallazgo): string {
+  return `Contexto · ${h.texto}`.replace(/["&|<>^%!;`]/g, '').replace(/\s+/g, ' ').slice(0, 60).trim()
+}
+
+// Nombre del fichero del informe: fecha y clave saneadas.
+export function ficheroIA(h: Hallazgo, fecha: string): string {
+  const sello = fecha.replace(/[^0-9]/g, '').slice(0, 14)
+  const clave = h.clave.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(-60)
+  return `${sello}-${clave}.md`
+}

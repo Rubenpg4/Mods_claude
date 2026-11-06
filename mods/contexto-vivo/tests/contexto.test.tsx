@@ -1,26 +1,25 @@
 import { expect, mock, test } from 'claude-code/testing'
 
+import { corteDeRewind, NOTA_FICHEROS, pasos, soloRuido } from '../hooks/arbol/mensajes'
 import {
   abandonarTrasRewind,
   borrables,
-  corteDeRewind,
-  enLinea,
   etiquetaNodo,
   filasArbol,
   fundirDuplicados,
-  NOTA_FICHEROS,
   origenEnCadena,
-  pasos,
   rewindDe,
   sinVacios,
-  soloRuido,
-  VIGIA_MS,
   vivificar,
-} from '../hooks/arbol'
-import { codificarPwsh, lanzadoresIA, ordenPwsh, resumirEntrada } from '../hooks/acciones'
-import { diagnosticar, ficheroIA, informeIA, tituloIA } from '../hooks/calculo'
+} from '../hooks/arbol/modelo'
+import { VIGIA_MS } from '../hooks/arbol/rewind'
+import { enLinea } from '../hooks/comun/formato'
+import { diagnosticar } from '../hooks/contexto/diagnostico'
+import { resumirEntrada } from '../hooks/contexto/medicion'
+import { ficheroIA, informeIA, tituloIA } from '../hooks/ia/informe'
+import { codificarPwsh, lanzadoresIA, ordenPwsh } from '../hooks/ia/lanzar'
+import { etiquetaTramo } from '../hooks/selector/modelos'
 import { leerConfig } from '../hooks/config'
-import { etiquetaTramo } from '../hooks/selector'
 
 // El estilo del tramo de la barra del esfuerzo que muestra `nivel`: el actual
 // va en negrita; los demás, atenuados.
