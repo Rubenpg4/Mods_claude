@@ -5,7 +5,7 @@ import type { Hallazgo, Seguimiento } from '../../../types'
 import { abrir } from '../../comun/entorno'
 import { duracionCorta, enLinea, k } from '../../comun/formato'
 import { ignorar, restaurarIgnorados } from '../../contexto/ignorados'
-import { ESFUERZO_IA, MODELO_IA } from '../../ia/informe'
+import { esRecaida, ESFUERZO_IA, modeloIA, sinResolver } from '../../ia/informe'
 import { marcarResuelto, reabrir, resolverConIA } from '../../ia/lanzar'
 import type { Ctx } from '../tipos'
 
@@ -15,15 +15,18 @@ import type { Ctx } from '../tipos'
 const MAXIMO_RESUELTOS = 5
 
 // ▲ Diagnóstico: cada mal uso con su consejo, sus pruebas, abrir, resolver
-// con IA (una sesión aparte en Sonnet) e ignorar. Mientras la IA trabaja, el
-// hallazgo sigue aquí «en curso»; cuando esa sesión lo marca como resuelto (o
-// la persona), pasa con ✓ a la tarjeta de resueltos y deja de contar.
+// con IA (una sesión aparte, en modo plan, con el modelo según el tipo) e
+// ignorar. Mientras la IA trabaja, el hallazgo sigue aquí «en curso»; cuando
+// esa sesión lo marca como resuelto (o la persona), pasa con ✓ a la tarjeta de
+// resueltos y deja de contar. Si después vuelve a haber pruebas, es una
+// recaída: vuelve a los avisos con lo que se hizo la vez anterior.
 export function vistaDiagnostico($: EngineInterface, c: Ctx) {
   const { Box, Text, Button, omitidos, seguimiento, ahora, interior, hallazgos, pasar, avivar, tarjeta } = c
   const de = (clave: string) => seguimiento.find(s => s.clave === clave)
-  const pendientes = hallazgos.filter(h => de(h.clave)?.resuelto === undefined)
+  const pendientes = sinResolver(hallazgos, seguimiento)
+  const recaidas = new Set(pendientes.filter(h => esRecaida(h, de(h.clave))).map(h => h.clave))
   const resueltos = seguimiento
-    .filter((s): s is Seguimiento & { resuelto: number } => s.resuelto !== undefined)
+    .filter((s): s is Seguimiento & { resuelto: number } => s.resuelto !== undefined && !recaidas.has(s.clave))
     .sort((a, b) => b.resuelto - a.resuelto)
 
   const verInforme = (s: Seguimiento) =>
@@ -36,7 +39,9 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
   const hallazgoFila = (x: Hallazgo) => {
     const ancho = Math.max(6, interior - 9)
     const ruta = x.ruta
-    const enCurso = de(x.clave)
+    const seguido = de(x.clave)
+    const enCurso = seguido?.resuelto === undefined ? seguido : undefined
+    const recaida = recaidas.has(x.clave) ? seguido : undefined
     // Las pruebas que caben en una línea; el informe lleva todas.
     const pruebas = x.pruebas.filter(p => !p.startsWith('Fichero: ')).slice(0, 2)
     return (
@@ -52,7 +57,12 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
         ))}
         {enCurso === undefined ? null : (
           <Text color="claude" wrap="truncate">
-            {`  ✦ en curso con ${MODELO_IA} (${ESFUERZO_IA}) desde hace ${duracionCorta(Math.max(0, ahora - enCurso.abierto))} · se marca solo al terminar`}
+            {`  ✦ en curso con ${modeloIA(x.tipo)} (${ESFUERZO_IA}) desde hace ${duracionCorta(Math.max(0, ahora - enCurso.abierto))} · se marca solo al terminar`}
+          </Text>
+        )}
+        {recaida?.resuelto === undefined ? null : (
+          <Text color="error" wrap="truncate">
+            {`  ↺ recaída: se resolvió hace ${duracionCorta(Math.max(0, ahora - recaida.resuelto))}${recaida.resumen ? ` (${recaida.resumen})` : ''} y ha vuelto`}
           </Text>
         )}
         <Box flexDirection="row" flexWrap="wrap" columnGap={2} paddingLeft={4}>
@@ -69,7 +79,7 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
           >
             <Text color="claude">{enCurso === undefined ? ' ✦ resolver con IA ' : ' ✦ otro chat '}</Text>
           </Button>
-          {enCurso === undefined ? null : verInforme(enCurso)}
+          {seguido === undefined ? null : verInforme(seguido)}
           <Button key={`diag-resuelto-${x.clave}`} plain hover={pasar(`diag-resuelto-${x.clave}`)} onPress={() => marcarResuelto($, x)}>
             <Text color="success">{' ✓ resuelto '}</Text>
           </Button>

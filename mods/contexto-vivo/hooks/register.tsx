@@ -143,20 +143,23 @@ export const register: Register = (on, opciones) => {
 
   on('command.run', { command: 'contexto-top' }, async $ => {
     await fotografiar($)
-    // `$.ui.log` lo muestra sin que el modelo lo lea, así no ocupa contexto.
-    $.ui.log(
-      informe(
-        await leerFoto($),
-        await leerLlamadas($),
-        await leerHistorial($),
-        await leerSubagentes($),
-        cfg,
-        // Los resueltos con IA (o a mano) no salen como avisos.
-        [...(await leerIgnorados($)), ...(await leerSeguimiento($)).filter(s => s.resuelto !== undefined).map(s => s.clave)],
-        await leerTotal($),
-        await leerRoturas($),
-      ),
+    const [f, lista, historial, subagentes, ignorados, seguimiento, t, roturas] = await Promise.all([
+      leerFoto($),
+      leerLlamadas($),
+      leerHistorial($),
+      leerSubagentes($),
+      leerIgnorados($),
+      leerSeguimiento($),
+      leerTotal($),
+      leerRoturas($),
+    ])
+    // Los resueltos con IA (o a mano) no salen como avisos, salvo que vuelvan.
+    const pendientes = new Set(
+      sinResolver(diagnosticar(f, lista, cfg, ignorados, { turnos: historial, subagentes, total: t, roturas }), seguimiento).map(h => h.clave),
     )
+    const ocultos = seguimiento.filter(s => s.resuelto !== undefined && !pendientes.has(s.clave)).map(s => s.clave)
+    // `$.ui.log` lo muestra sin que el modelo lo lea, así no ocupa contexto.
+    $.ui.log(informe(f, lista, historial, subagentes, cfg, [...ignorados, ...ocultos], t, roturas))
 
     return {}
   })

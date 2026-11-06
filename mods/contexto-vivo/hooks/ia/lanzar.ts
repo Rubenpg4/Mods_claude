@@ -5,22 +5,43 @@ import type { Hallazgo, Seguimiento } from '../../types'
 import { carpetaDatos } from '../comun/entorno'
 import { corta } from '../comun/formato'
 import { cambiarSeguimiento, leerSeguimiento, leerTotal } from '../estado/contexto'
-import { ESFUERZO_IA, ficheroIA, informeIA, MODELO_IA, promptIA, resolucionIA, tituloIA } from './informe'
+import { ESFUERZO_IA, FICHERO_SISTEMA, ficheroIA, informeIA, modeloIA, promptIA, resolucionIA, sistemaIA, tituloIA } from './informe'
 
 // Resolver con IA, la parte que actúa: escribe el informe y abre la sesión aparte
 // de `claude` en Windows Terminal o en una consola, con PowerShell 7; si no puede,
 // copia la orden para pegarla a mano. Después sigue el hallazgo hasta que esa
 // sesión lo marca como resuelto en el informe.
 
-// Los argumentos de `claude` para la sesión aparte.
-export function argumentosIA(titulo: string, prompt: string): string[] {
-  return ['--model', MODELO_IA, '--effort', ESFUERZO_IA, '-n', titulo, prompt]
+// Con qué arranca la sesión aparte: modelo, system prompt (fichero), carpeta
+// de los informes (para leer y cerrar el suyo sin salir de sus directorios),
+// título y primer mensaje.
+export type Arranque = { modelo: string; sistema: string; carpeta: string; titulo: string; prompt: string }
+
+// Los argumentos de `claude` para la sesión aparte: en modo plan, para que no
+// cambie nada hasta que la persona apruebe el plan. `--add-dir` admite varias
+// carpetas: va antes de `-n` para que no se trague el prompt.
+export function argumentosIA(a: Arranque): string[] {
+  return [
+    '--model',
+    a.modelo,
+    '--effort',
+    ESFUERZO_IA,
+    '--permission-mode',
+    'plan',
+    '--append-system-prompt-file',
+    a.sistema,
+    '--add-dir',
+    a.carpeta,
+    '-n',
+    a.titulo,
+    a.prompt,
+  ]
 }
 
 // La orden de PowerShell que arranca la sesión aparte, con cada argumento
 // entre comillas simples (una comilla simple se dobla).
-export function ordenPwsh(titulo: string, prompt: string): string {
-  return ['claude', ...argumentosIA(titulo, prompt).map(a => (/^[A-Za-z0-9-]+$/.test(a) ? a : `'${a.replace(/'/g, "''")}'`))].join(' ')
+export function ordenPwsh(a: Arranque): string {
+  return ['claude', ...argumentosIA(a).map(x => (/^[A-Za-z0-9-]+$/.test(x) ? x : `'${x.replace(/'/g, "''")}'`))].join(' ')
 }
 
 // Una orden para `pwsh -EncodedCommand`: UTF-16LE en base64. Así ni Windows
@@ -38,17 +59,18 @@ export function codificarPwsh(orden: string): string {
 // pestaña nueva en la ventana de Windows Terminal más reciente (con el perfil
 // por defecto) y, si no está, una consola con `start`. En las dos corre
 // PowerShell 7 con -NoExit: al salir de Claude queda la consola en el proyecto.
-export function lanzadoresIA(directorio: string, titulo: string, prompt: string): string[][] {
-  const pwsh = ['pwsh', '-NoLogo', '-NoExit', '-EncodedCommand', codificarPwsh(ordenPwsh(titulo, prompt))]
+export function lanzadoresIA(directorio: string, a: Arranque): string[][] {
+  const pwsh = ['pwsh', '-NoLogo', '-NoExit', '-EncodedCommand', codificarPwsh(ordenPwsh(a))]
   return [
     ['wt.exe', '-w', '0', 'new-tab', '-d', directorio, ...pwsh],
     ['cmd', '/c', 'start', '', '/D', directorio, ...pwsh],
   ]
 }
 
-// Escribe el informe del hallazgo y abre una sesión de Claude Code aparte
-// (Sonnet, esfuerzo alto) en el proyecto que empieza leyéndolo. Si no se puede
-// abrir una terminal, copia la orden para pegarla a mano.
+// Escribe el informe del hallazgo y el system prompt, y abre una sesión de
+// Claude Code aparte (el modelo según el tipo, esfuerzo alto, modo plan) en el
+// proyecto, que empieza leyéndolo. Si no se puede abrir una terminal, copia la
+// orden para pegarla a mano.
 export async function resolverConIA($: EngineInterface, h: Hallazgo, superficie?: RenderSurface): Promise<void> {
   const [raiz, sesion, ahora, total] = await Promise.all([
     $.session.root(),
@@ -57,7 +79,9 @@ export async function resolverConIA($: EngineInterface, h: Hallazgo, superficie?
     leerTotal($),
   ])
   const fecha = new Date(ahora).toISOString().slice(0, 19).replace('T', ' ')
-  const ruta = `${await carpetaDatos($, 'informes')}/${ficheroIA(h, fecha)}`
+  const carpeta = await carpetaDatos($, 'informes')
+  const ruta = `${carpeta}/${ficheroIA(h, fecha)}`
+  const sistema = `${carpeta}/${FICHERO_SISTEMA}`
   const informe = informeIA(h, {
     fecha,
     proyecto: raiz,
@@ -69,6 +93,7 @@ export async function resolverConIA($: EngineInterface, h: Hallazgo, superficie?
   })
   try {
     await $.fs.write(ruta, informe)
+    await $.fs.write(sistema, sistemaIA())
   } catch (error) {
     $.ui.toast(`✦ No se pudo escribir el informe: ${error instanceof Error ? error.message : String(error)}`)
     return
@@ -78,22 +103,22 @@ export async function resolverConIA($: EngineInterface, h: Hallazgo, superficie?
     ...lista.filter(s => !(s.clave === h.clave && s.proyecto === raiz)),
     { clave: h.clave, proyecto: raiz, texto: h.texto, informe: ruta, abierto: ahora },
   ])
-  const titulo = tituloIA(h)
-  const prompt = promptIA(ruta)
+  const modelo = modeloIA(h.tipo)
+  const arranque: Arranque = { modelo, sistema, carpeta, titulo: tituloIA(h), prompt: promptIA(ruta) }
   const seguro = !/[&|<>^"%!]/.test(raiz)
-  for (const orden of lanzadoresIA(raiz, titulo, prompt)) {
+  for (const orden of lanzadoresIA(raiz, arranque)) {
     if (orden[0] === 'cmd' && !seguro) continue
     try {
       const r = await $.process.run(orden, { timeoutMs: 15_000 })
       if (r.exitCode === 0) {
-        $.ui.toast(`✦ Chat con ${MODELO_IA} (${ESFUERZO_IA}) abierto para «${h.texto.slice(0, 50)}» · informe en ${corta(ruta)}`)
+        $.ui.toast(`✦ Chat con ${modelo} (${ESFUERZO_IA}, modo plan) abierto para «${h.texto.slice(0, 50)}» · informe en ${corta(ruta)}`)
         return
       }
     } catch {
       // Sigue con la siguiente.
     }
   }
-  const manual = ordenPwsh(titulo, prompt)
+  const manual = ordenPwsh(arranque)
   const copia = await $.ui.copy({ text: manual, ...(superficie === undefined ? {} : { surface: superficie }) })
   $.ui.toast(
     copia.isCopied

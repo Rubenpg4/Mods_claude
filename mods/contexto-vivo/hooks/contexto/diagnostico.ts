@@ -103,6 +103,12 @@ function lineas(l: Llamada): string {
   return r[1] === Infinity ? `desde la línea ${r[0]}` : `líneas ${r[0]}–${r[1] - 1}`
 }
 
+// La hora de la llamada más reciente, si se sabe.
+function ultimaDe(ls: { hora?: number }[]): number | undefined {
+  const horas = ls.map(l => l.hora).filter((h): h is number => h !== undefined)
+  return horas.length === 0 ? undefined : Math.max(...horas)
+}
+
 function pct(tokens: number, ventana: number): string {
   return `${Math.round((tokens / ventana) * 100)} %`
 }
@@ -149,6 +155,7 @@ function relecturas(lista: Llamada[], cfg: Config): { hallazgos: Hallazgo[]; rut
       consejo: 'reutiliza lo ya leído o lee solo la parte que cambió',
       tokens: sobra,
       veces: veces.length,
+      ultima: ultimaDe([...sobran]),
       ruta,
       herramienta: 'Read',
       pruebas: [
@@ -193,6 +200,7 @@ function repetidas(lista: Llamada[], cfg: Config): { hallazgos: Hallazgo[]; ids:
       consejo: 'reutiliza el resultado anterior; si hará falta otra vez, guárdalo en un fichero y lee solo lo necesario',
       tokens: sobra,
       veces: ls.length,
+      ultima: ultimaDe(ls),
       herramienta: primera.herramienta,
       muestra: primera.muestra,
       pruebas: [
@@ -298,6 +306,7 @@ function agrupados(lista: Llamada[], cfg: Config, releidas: Set<string>, repetid
       consejo: consejoDe(tipo, ls),
       tokens: suma,
       veces: ls.length,
+      ultima: ultimaDe(ls),
       ruta,
       herramienta: mayor.herramienta,
       muestra: mayor.muestra,
@@ -345,6 +354,7 @@ function exploracion(lista: Llamada[], cfg: Config, turnos: Turno[]): Hallazgo |
     consejo: 'delega la exploración en un subagente (Explore) que devuelva solo la conclusión',
     tokens: casos.reduce((s, c) => s + c.suma, 0),
     veces: casos.length,
+    ultima: ultimaDe(casos.flatMap(c => c.ls)),
     pruebas: [
       ...casos.map(c => {
         const prompt = turnos.find(t => t.n === c.turno)?.prompt
@@ -381,6 +391,7 @@ function cache(roturas: Rotura[], cfg: Config): Hallazgo | null {
     consejo,
     tokens: suma,
     veces: roturas.length,
+    ultima: ultimaDe(roturas),
     pruebas: [
       ...roturas.map(r => {
         const motivos = [

@@ -87,6 +87,9 @@ export type Hallazgo = {
   muestra?: string
   // Cuántas veces se ha dado el mismo patrón (llamadas, lecturas, turnos…).
   veces?: number
+  // La hora de la prueba más reciente: si es posterior a cuando se dio por
+  // resuelto, el problema ha vuelto (recaída).
+  ultima?: number
 }
 
 // Una fila del desglose (categoría, fichero de memoria, servidor MCP, skill);
