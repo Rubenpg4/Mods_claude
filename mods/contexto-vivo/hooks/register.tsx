@@ -44,7 +44,7 @@ import { acabaTurno, comandoModelo, empiezaTurno, esPropio, soltarEsfuerzo } fro
 import { dibujarBanda } from './selector/banda'
 import { esNivel } from './selector/modelos'
 import { leerConfig } from './config'
-import { dibujarPanel } from './panel'
+import { dibujarPanel } from './panel/index'
 
 let tic: Timer | null = null
 
