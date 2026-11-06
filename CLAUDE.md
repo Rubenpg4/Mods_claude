@@ -7,7 +7,8 @@ Guía para trabajar en este repositorio con Claude Code.
 Una colección de mods de Claude Code (`mods/<nombre>/`). Ahora hay uno, **contexto-vivo**: ventana de contexto en directo, diagnóstico de malos usos, selector de modelo y esfuerzo, y árbol de checkpoints. Todo (código, comentarios, nombres, commits y documentación) está en **español**.
 
 - Uso y opciones: `mods/contexto-vivo/README.md`
-- Cómo está hecho (estado, eventos, árbol, reglas del motor): `mods/contexto-vivo/ARQUITECTURA.md`. **Léelo antes de cambiar algo que no sea trivial.**
+- Cómo está hecho (estado, eventos, árbol, reglas del motor): `mods/contexto-vivo/ARQUITECTURA.md` (≈ 25 KB, ≈ 7k tokens). **Consúltalo antes de cambiar algo que no sea trivial, pero por secciones, nunca entero**: `grep -n '^#' mods/contexto-vivo/ARQUITECTURA.md` da el índice y después se lee solo el rango que haga falta (`sed -n 'A,Bp'` o `Read` con `offset`/`limit`). §9 (reglas del motor) y la sección del dominio que toques bastan casi siempre.
+- `CLAUDE.md` ya está en contexto al empezar: no lo vuelvas a leer con `cat`.
 
 `~/.claude/mods/contexto-vivo` suele ser un enlace a esta carpeta: lo que edites aquí es el mod que está en uso.
 
@@ -50,7 +51,7 @@ Cada carpeta importa solo de las anteriores: `comun`/`estado` → `contexto`/`ia
 1. **`$` nunca dentro de un objeto** (literal, spread, devuelto o guardado): se pasa como argumento propio llamado `$`. Si no, el motor no carga el módulo.
 2. **Cada átomo con sus `leer…`/`cambiar…` en el mismo fichero**, y como funciones con nombre (lo exige el validador).
 3. **Si cambian los campos de un átomo, cambia su `shape`** (`'foto-3'` → `'foto-4'`). Nunca cambies su `key`, o se pierde lo guardado.
-4. **Las variables de módulo** (`cola`, `vigia`/`visto`/`mirando`, `marcas`, `turno`/`propios`, `tic`) solo pueden reasignarse dentro de su fichero. Si cambias de fichero una función que las modifica, va con ellas.
+4. **Las variables de módulo** (`cola`, `vigia`/`visto`/`mirando`, `marcas`, `turno`/`propios`, `tic`, `sondeo`) solo pueden reasignarse dentro de su fichero. Si cambias de fichero una función que las modifica, va con ellas.
 5. **En `hooks/`, nada de Node, `require` ni `import()` dinámico.** Por convención se importa la ruta del fichero (`./panel/index`): no se ha comprobado si el motor resuelve una carpeta (`./panel`).
 6. **`$.command.run` no puede ejecutarse dentro del hook del comando** que espera el turno: aplázalo con `$.clock.after(10, …)`.
 7. **Las operaciones sobre el índice del árbol van en `enCola`**, para que no se pisen.

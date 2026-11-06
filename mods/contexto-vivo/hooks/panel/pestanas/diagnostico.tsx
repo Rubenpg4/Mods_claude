@@ -1,22 +1,42 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Hallazgo } from '../../../types'
+import type { Hallazgo, Seguimiento } from '../../../types'
 
 import { abrir } from '../../comun/entorno'
-import { enLinea, k } from '../../comun/formato'
+import { duracionCorta, enLinea, k } from '../../comun/formato'
 import { ignorar, restaurarIgnorados } from '../../contexto/ignorados'
-import { resolverConIA } from '../../ia/lanzar'
+import { ESFUERZO_IA, MODELO_IA } from '../../ia/informe'
+import { marcarResuelto, reabrir, resolverConIA } from '../../ia/lanzar'
 import type { Ctx } from '../tipos'
 
 // Pestaña ▲ Diagnóstico del panel.
 
+// Los resueltos que se listan, los más recientes primero.
+const MAXIMO_RESUELTOS = 5
+
 // ▲ Diagnóstico: cada mal uso con su consejo, sus pruebas, abrir, resolver
-// con IA (una sesión aparte en Sonnet) e ignorar.
+// con IA (una sesión aparte en Sonnet) e ignorar. Mientras la IA trabaja, el
+// hallazgo sigue aquí «en curso»; cuando esa sesión lo marca como resuelto (o
+// la persona), pasa con ✓ a la tarjeta de resueltos y deja de contar.
 export function vistaDiagnostico($: EngineInterface, c: Ctx) {
-  const { Box, Text, Button, omitidos, interior, hallazgos, pasar, avivar, tarjeta } = c
+  const { Box, Text, Button, omitidos, seguimiento, ahora, interior, hallazgos, pasar, avivar, tarjeta } = c
+  const de = (clave: string) => seguimiento.find(s => s.clave === clave)
+  const pendientes = hallazgos.filter(h => de(h.clave)?.resuelto === undefined)
+  const resueltos = seguimiento
+    .filter((s): s is Seguimiento & { resuelto: number } => s.resuelto !== undefined)
+    .sort((a, b) => b.resuelto - a.resuelto)
+
+  const verInforme = (s: Seguimiento) =>
+    s.informe === '' ? null : (
+      <Button key={`diag-informe-${s.clave}`} plain hover={pasar(`diag-informe-${s.clave}`)} onPress={() => void abrir($, s.informe)}>
+        <Text color="suggestion">{' ↗ informe '}</Text>
+      </Button>
+    )
+
   const hallazgoFila = (x: Hallazgo) => {
     const ancho = Math.max(6, interior - 9)
     const ruta = x.ruta
+    const enCurso = de(x.clave)
     // Las pruebas que caben en una línea; el informe lleva todas.
     const pruebas = x.pruebas.filter(p => !p.startsWith('Fichero: ')).slice(0, 2)
     return (
@@ -30,7 +50,12 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
         {pruebas.map(p => (
           <Text dimColor wrap="truncate">{`    · ${enLinea(p)}`}</Text>
         ))}
-        <Box flexDirection="row" columnGap={2} paddingLeft={4}>
+        {enCurso === undefined ? null : (
+          <Text color="claude" wrap="truncate">
+            {`  ✦ en curso con ${MODELO_IA} (${ESFUERZO_IA}) desde hace ${duracionCorta(Math.max(0, ahora - enCurso.abierto))} · se marca solo al terminar`}
+          </Text>
+        )}
+        <Box flexDirection="row" flexWrap="wrap" columnGap={2} paddingLeft={4}>
           {ruta === undefined ? null : (
             <Button key={`diag-abrir-${x.clave}`} plain hover={pasar(`diag-abrir-${x.clave}`)} onPress={() => void abrir($, ruta)}>
               <Text color="suggestion">{' ↗ abrir '}</Text>
@@ -40,9 +65,13 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
             key={`diag-ia-${x.clave}`}
             plain
             hover={pasar(`diag-ia-${x.clave}`)}
-            onPress={press => resolverConIA($, x, press.surface)}
+            onPress={(press: { surface: Parameters<typeof resolverConIA>[2] }) => resolverConIA($, x, press.surface)}
           >
-            <Text color="claude">{' ✦ resolver con IA '}</Text>
+            <Text color="claude">{enCurso === undefined ? ' ✦ resolver con IA ' : ' ✦ otro chat '}</Text>
+          </Button>
+          {enCurso === undefined ? null : verInforme(enCurso)}
+          <Button key={`diag-resuelto-${x.clave}`} plain hover={pasar(`diag-resuelto-${x.clave}`)} onPress={() => marcarResuelto($, x)}>
+            <Text color="success">{' ✓ resuelto '}</Text>
           </Button>
           <Button key={`diag-ignorar-${x.clave}`} plain hover={pasar(`diag-ignorar-${x.clave}`)} onPress={() => void ignorar($, x.clave)}>
             <Text dimColor hover={avivar(`diag-ignorar-${x.clave}`, 'error')}>
@@ -53,11 +82,35 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
       </Box>
     )
   }
-  return tarjeta(
-    hallazgos.length === 0 ? 'Diagnóstico' : `Diagnóstico · ${hallazgos.length} aviso${hallazgos.length === 1 ? '' : 's'}`,
+
+  const resueltoFila = (s: Seguimiento & { resuelto: number }) => (
+    <Box flexDirection="column" marginBottom={1}>
+      <Text wrap="truncate">
+        <Text color="success" weight="bold">
+          {'✓ '}
+        </Text>
+        <Text dimColor strikethrough>
+          {s.texto}
+        </Text>
+        <Text dimColor>{`  · hace ${duracionCorta(Math.max(0, ahora - s.resuelto))}`}</Text>
+      </Text>
+      {s.resumen === undefined || s.resumen === '' ? null : <Text dimColor wrap="wrap">{`  ↳ ${s.resumen}`}</Text>}
+      <Box flexDirection="row" columnGap={2} paddingLeft={4}>
+        {verInforme(s)}
+        <Button key={`diag-reabrir-${s.clave}`} plain hover={pasar(`diag-reabrir-${s.clave}`)} onPress={() => reabrir($, s.clave)}>
+          <Text dimColor>{' ↺ reabrir '}</Text>
+        </Button>
+      </Box>
+    </Box>
+  )
+
+  const principal = tarjeta(
+    pendientes.length === 0 ? 'Diagnóstico' : `Diagnóstico · ${pendientes.length} aviso${pendientes.length === 1 ? '' : 's'}`,
     [
-      hallazgos.length === 0 ? <Text color="success">✓ Sin malos usos detectados.</Text> : null,
-      ...hallazgos.slice(0, 8).map(hallazgoFila),
+      pendientes.length > 0 ? null : (
+        <Text color="success">{resueltos.length > 0 ? '✓ Sin malos usos pendientes.' : '✓ Sin malos usos detectados.'}</Text>
+      ),
+      ...pendientes.slice(0, 8).map(hallazgoFila),
       omitidos.length === 0 ? null : (
         <Box flexDirection="row" columnGap={2}>
           <Text dimColor>{`${omitidos.length} ignorado${omitidos.length === 1 ? '' : 's'}`}</Text>
@@ -69,6 +122,8 @@ export function vistaDiagnostico($: EngineInterface, c: Ctx) {
         </Box>
       ),
     ],
-    hallazgos.some(x => x.gravedad === 'alta') ? 'error' : hallazgos.length > 0 ? 'warning' : 'success',
+    pendientes.some(x => x.gravedad === 'alta') ? 'error' : pendientes.length > 0 ? 'warning' : 'success',
   )
+  if (resueltos.length === 0) return principal
+  return [principal, tarjeta(`✓ Resueltos · ${resueltos.length}`, resueltos.slice(0, MAXIMO_RESUELTOS).map(resueltoFila), 'success')]
 }

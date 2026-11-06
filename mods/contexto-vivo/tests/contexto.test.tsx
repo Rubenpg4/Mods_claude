@@ -16,8 +16,8 @@ import { VIGIA_MS } from '../hooks/arbol/rewind'
 import { enLinea } from '../hooks/comun/formato'
 import { diagnosticar } from '../hooks/contexto/diagnostico'
 import { resumirEntrada } from '../hooks/contexto/medicion'
-import { ficheroIA, informeIA, tituloIA } from '../hooks/ia/informe'
-import { codificarPwsh, lanzadoresIA, ordenPwsh } from '../hooks/ia/lanzar'
+import { ficheroIA, informeIA, MARCA_RESUELTO, resolucionIA, sinResolver, tituloIA } from '../hooks/ia/informe'
+import { codificarPwsh, lanzadoresIA, ordenPwsh, SONDEO_MS } from '../hooks/ia/lanzar'
 import { etiquetaTramo } from '../hooks/selector/modelos'
 import { leerConfig } from '../hooks/config'
 
@@ -156,11 +156,14 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   on('session.root', () => ({ value: '/repo' }))
   // El modelo que muestra /model: la fila lo lee en cada dibujo.
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
-  on('fs.read', () => {
-    throw new Error('ENOENT')
-  })
-  // ✦ Resolver con IA: el informe se escribe y se abre una terminal aparte.
+  // ✦ Resolver con IA: el informe se escribe y se abre una terminal aparte;
+  // lo escrito se puede volver a leer (el sondeo de «## Resuelto»).
   const escritos = new Map<string, string>()
+  on('fs.read', (_, e) => {
+    const texto = escritos.get((e as { path: string }).path)
+    if (texto === undefined) throw new Error('ENOENT')
+    return { value: texto }
+  })
   on('fs.write', (_, e) => {
     const { path, text } = e as { path: string; text: string }
     escritos.set(path, text)
@@ -312,6 +315,35 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   expect(lanzados.map(a => a[0])).toEqual(['wt.exe', 'cmd'])
   expect(copiado.at(-1)).toMatch(/^claude --model sonnet --effort high -n 'Contexto · docs\/plan\.md leído 2 veces' 'Lee el informe .*plan-md\.md y /)
   expect(avisos.at(-1)).toContain('orden copiada')
+
+  // Mientras la sesión aparte trabaja, el hallazgo sigue contando, «en curso».
+  expect(informe).toContain(`una línea que sea solo \`${MARCA_RESUELTO}\``)
+  expect(await ui.find({ type: 'Text', text: /✦ en curso con sonnet \(high\) desde hace 1m/ })).toBeDefined()
+  expect(await ui.find({ key: 'diag-informe-relectura:C:/repo/docs/plan.md' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Diagnóstico · 2 avisos/ })).toBeDefined()
+  expect(guardado.get('seguimiento')).toMatchObject([{ clave: 'relectura:C:/repo/docs/plan.md', proyecto: '/repo' }])
+  // La sesión aparte lo da por resuelto al final del informe: al siguiente
+  // sondeo pasa con ✓ a «Resueltos», con lo que escribió, y deja de contar.
+  const [claveInforme = '', textoInforme = ''] = [...escritos].find(([r]) => r.includes('informes')) ?? []
+  escritos.set(claveInforme, `${textoInforme}\n${MARCA_RESUELTO}\n\nAñadido un índice al principio de plan.md.\n`)
+  await reloj.advance(SONDEO_MS)
+  await ui.find({ type: 'Text' })
+  expect(avisos.at(-1)).toBe('✓ Resuelto: docs/plan.md leído 2 veces · Añadido un índice al principio de plan.md.')
+  expect(await ui.find({ type: 'Text', text: /Diagnóstico · 1 aviso$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: '✓ Resueltos · 1' })).toBeDefined()
+  const tachados = await ui.findAll({ type: 'Text', text: 'docs/plan.md leído 2 veces' })
+  expect(tachados.some(t => (t.props as { strikethrough?: boolean } | undefined)?.strikethrough === true)).toBe(true)
+  expect(await ui.find({ type: 'Text', text: /↳ Añadido un índice al principio de plan\.md\./ })).toBeDefined()
+  expect(await ui.find({ key: 'diag-ia-relectura:C:/repo/docs/plan.md' })).toBeUndefined()
+  // Reabrir lo devuelve a los avisos; ✓ resuelto lo marca a mano.
+  await ui.press({ key: 'diag-reabrir-relectura:C:/repo/docs/plan.md' })
+  expect(await ui.find({ type: 'Text', text: /Diagnóstico · 2 avisos/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ Resueltos/ })).toBeUndefined()
+  await ui.press({ key: 'diag-resuelto-relectura:C:/repo/docs/plan.md' })
+  expect(await ui.find({ type: 'Text', text: /Diagnóstico · 1 aviso$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /↳ Marcado como resuelto a mano/ })).toBeDefined()
+  await ui.press({ key: 'diag-reabrir-relectura:C:/repo/docs/plan.md' })
+  expect(guardado.get('seguimiento')).toEqual([])
 
   // Compactar pide confirmación y avisa del resultado.
   await ui.press({ key: 'pestana-tendencia' })
@@ -1477,6 +1509,15 @@ test('el informe para la IA recoge argumentos, resultado y encargo de cada halla
   expect(texto).toContain('Ocupación de aquella sesión al detectarlo: 40 %')
   expect(texto).toContain("commit 941ed23\n'''raro'''")
   expect(texto).toContain('Propón la versión filtrada del mismo comando')
+  // Pide marcarlo al terminar, sin que el propio informe parezca ya resuelto.
+  expect(texto).toContain('## Al terminar')
+  expect(resolucionIA(texto)).toBeNull()
+  expect(resolucionIA(`${texto}\n## Resuelto\n\nFiltrado con --oneline.\nY una regla en CLAUDE.md.\n\n## Notas\nnada`)).toBe(
+    'Filtrado con --oneline. Y una regla en CLAUDE.md.',
+  )
+  expect(resolucionIA('## resuelto:\r\n')).toBe('')
+  expect(sinResolver([h], [{ clave: 'bash:b1', proyecto: 'C:/repo', texto: '', informe: '', abierto: 0 }])).toEqual([h])
+  expect(sinResolver([h], [{ clave: 'bash:b1', proyecto: 'C:/repo', texto: '', informe: '', abierto: 0, resuelto: 1 }])).toEqual([])
   expect(ficheroIA(h, '2026-11-06 10:00:00')).toBe('20261106100000-bash-b1.md')
   expect(resumirEntrada({ tool: 'Read', tool_use_id: 'x' })).toBeUndefined()
   expect(resumirEntrada({ command: 'x'.repeat(1000) })?.length).toBe(401)

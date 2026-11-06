@@ -1,4 +1,4 @@
-import type { Hallazgo, TipoHallazgo } from '../../types'
+import type { Hallazgo, Seguimiento, TipoHallazgo } from '../../types'
 
 import { k } from '../comun/formato'
 
@@ -79,14 +79,43 @@ export function informeIA(h: Hallazgo, c: ContextoIA): string {
     ENCARGOS[h.tipo],
     '',
     'No continúes la tarea de aquella sesión: el objetivo es que este problema no vuelva a pasar. Mira los ficheros del proyecto que haga falta, explícame la causa en pocas líneas y, antes de cambiar ningún fichero, enséñame el cambio y espera a que lo apruebe.',
+    '',
+    '## Al terminar',
+    '',
+    `Cuando el cambio esté aplicado y yo lo haya aprobado, márcalo como resuelto: añade al final de este mismo informe una línea que sea solo \`${MARCA_RESUELTO}\` y, debajo, una o dos frases con lo que se cambió. El diagnóstico del mod lo detecta y pone el problema como solucionado. Si al final no se cambia nada, no la añadas.`,
   )
   return lineas.join('\n')
+}
+
+// La línea con que la sesión aparte da el problema por resuelto, al final
+// del informe; debajo, lo que se cambió.
+export const MARCA_RESUELTO = '## Resuelto'
+
+// Lo que la sesión aparte escribió bajo «## Resuelto» (hasta el siguiente
+// título), en una línea; '' si no escribió nada y null si aún no está.
+export function resolucionIA(texto: string): string | null {
+  const lineas = texto.split(/\r?\n/)
+  const i = lineas.findIndex(l => /^##\s+resuelto\s*:?\s*$/i.test(l.trim()))
+  if (i < 0) return null
+  const resto = lineas.slice(i + 1)
+  const fin = resto.findIndex(l => /^#{1,6}\s/.test(l.trim()))
+  return (fin < 0 ? resto : resto.slice(0, fin))
+    .map(l => l.trim())
+    .filter(l => l !== '')
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .slice(0, 240)
+}
+
+// Los hallazgos que siguen pendientes: los no resueltos (en curso o no).
+export function sinResolver(hallazgos: Hallazgo[], lista: Seguimiento[]): Hallazgo[] {
+  return hallazgos.filter(h => lista.find(s => s.clave === h.clave)?.resuelto === undefined)
 }
 
 // El primer mensaje de la sesión aparte. Sin comillas, `;`, `&`, `%` ni otros
 // caracteres que Windows Terminal o cmd interpretan.
 export function promptIA(ruta: string): string {
-  return `Lee el informe ${ruta} y ayúdame a resolver el problema de contexto que describe, siguiendo lo que pide.`
+  return `Lee el informe ${ruta} y ayúdame a resolver el problema de contexto que describe, siguiendo lo que pide. Al terminar, márcalo como resuelto en el mismo informe.`
 }
 
 // Nombre de la sesión aparte (claude -n), sin caracteres conflictivos.

@@ -35,11 +35,14 @@ import {
   leerHistorial,
   leerIgnorados,
   leerLlamadas,
+  leerSeguimiento,
   leerSubagentes,
   leerTotal,
 } from './estado/contexto'
 import { cambiarPestana, PANEL } from './estado/panel'
 import { cambiarAplicado, leerAplicado } from './estado/selector'
+import { sinResolver } from './ia/informe'
+import { cargarSeguimiento } from './ia/lanzar'
 import { acabaTurno, comandoModelo, empiezaTurno, esPropio, soltarEsfuerzo } from './selector/aplicar'
 import { dibujarBanda } from './selector/banda'
 import { esNivel } from './selector/modelos'
@@ -116,6 +119,8 @@ export const register: Register = (on, opciones) => {
     // siguiente turno.
     arrancarVigia($)
     await cargarIgnorados($)
+    // Los hallazgos llevados a la IA y el sondeo de los que siguen en curso.
+    await cargarSeguimiento($).catch(error => $.ui.log(`seguimiento: ${String(error)}`, { to: 'debug' }))
     // Los límites 5h/7d de la última lectura, hasta que llegue la primera
     // respuesta de esta sesión.
     await cargarLimites($)
@@ -145,7 +150,8 @@ export const register: Register = (on, opciones) => {
         await leerHistorial($),
         await leerSubagentes($),
         cfg,
-        await leerIgnorados($),
+        // Los resueltos con IA (o a mano) no salen como avisos.
+        [...(await leerIgnorados($)), ...(await leerSeguimiento($)).filter(s => s.resuelto !== undefined).map(s => s.clave)],
         await leerTotal($),
       ),
     )
@@ -392,6 +398,7 @@ export const register: Register = (on, opciones) => {
           await recargarArbol($)
           await verArbolEntero($, true)
           await cargarIgnorados($)
+          await cargarSeguimiento($).catch(error => $.ui.log(`seguimiento: ${String(error)}`, { to: 'debug' }))
           await cargarLimites($)
           await marcarHora($)
           await refrescar($, cfg)
@@ -407,7 +414,7 @@ export const register: Register = (on, opciones) => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const f = await leerFoto($)
     const t = await leerTotal($)
-    const avisos = diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($)).length
+    const avisos = sinResolver(diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($)), await leerSeguimiento($)).length
     const turnos = tendencia(await leerHistorial($), f, t).turnosRestantes
     const cola = pie(t, await limitesVisibles($), turnos, avisos, await horaVisible($))
     // Modelo y esfuerzo al final de la fila: el modelo de la sesión tal como lo

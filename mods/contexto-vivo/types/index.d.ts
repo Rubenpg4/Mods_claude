@@ -18,6 +18,20 @@ export type Llamada = {
 // Una porción del gráfico de quesitos; `rgb` es 0xRRGGBB.
 export type Quesito = { nombre: string; tokens: number; rgb: number }
 
+// Un hallazgo llevado a una sesión aparte con IA. Está en curso hasta que esa
+// sesión añade «## Resuelto» al informe (o la persona lo marca a mano);
+// entonces lleva la hora (`resuelto`) y lo que se cambió (`resumen`). Se guarda
+// en `$.store` para todos los proyectos; el estado tiene solo los de este.
+export type Seguimiento = {
+  clave: string
+  proyecto: string
+  texto: string
+  informe: string
+  abierto: number
+  resuelto?: number
+  resumen?: string
+}
+
 // Las clases de mal uso que detecta el diagnóstico.
 export type TipoHallazgo = 'relectura' | 'lectura' | 'bash' | 'mcp' | 'subagente' | 'otra' | 'memoria' | 'mcp-cargado'
 
@@ -210,6 +224,9 @@ declare module 'claude-code' {
       subagentes: Shaped<Subagente[]>
       // Claves de los hallazgos ignorados (copia de lo guardado en $.store).
       ignorados: Shaped<string[]>
+      // Hallazgos de este proyecto llevados a la IA, en curso o resueltos
+      // (copia de lo guardado en $.store).
+      seguimiento: Shaped<Seguimiento[]>
       // El botón de compactar espera confirmación.
       confirmar: Shaped<boolean>
       // Lo que la compactación debe conservar, escrito por la persona.

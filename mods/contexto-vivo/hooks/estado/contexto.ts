@@ -1,6 +1,6 @@
 import { atom, type EngineInterface, read, update } from 'claude-code'
 
-import type { Aviso, Foto, Limite, Llamada, Subagente, Total, Turno } from '../../types'
+import type { Aviso, Foto, Limite, Llamada, Seguimiento, Subagente, Total, Turno } from '../../types'
 
 // Estado de la medición: llamadas, cifra total, límites de uso, foto de
 // /context, aviso de umbral, turnos, subagentes, hallazgos ignorados, último
@@ -40,6 +40,9 @@ const subagentes = atom({ plugin: 'contexto-vivo', key: 'subagentes' } as const,
 })
 const ignorados = atom({ plugin: 'contexto-vivo', key: 'ignorados' } as const, [], {
   shape: 'ignorados-1',
+})
+const seguimiento = atom({ plugin: 'contexto-vivo', key: 'seguimiento' } as const, [], {
+  shape: 'seguimiento-1',
 })
 
 const ultimoPrompt = atom({ plugin: 'contexto-vivo', key: 'ultimoPrompt' } as const, '', {
@@ -113,6 +116,13 @@ export function leerIgnorados($: $) {
 }
 export function cambiarIgnorados($: $, f: Cambio<string[]>) {
   return update($, ignorados, f)
+}
+
+export function leerSeguimiento($: $) {
+  return read($, seguimiento)
+}
+export function cambiarSeguimiento($: $, f: Cambio<Seguimiento[]>) {
+  return update($, seguimiento, f)
 }
 
 export function leerUltimoPrompt($: $) {

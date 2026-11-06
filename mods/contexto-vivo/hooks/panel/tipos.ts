@@ -9,6 +9,7 @@ import type {
   leerHistorial,
   leerIgnorados,
   leerLlamadas,
+  leerSeguimiento,
   leerSubagentes,
   leerTotal,
 } from '../estado/contexto'
@@ -59,6 +60,7 @@ export type Ctx = Base &
     turnos: Leido<typeof leerHistorial>
     agentes: Leido<typeof leerSubagentes>
     omitidos: Leido<typeof leerIgnorados>
+    seguimiento: Leido<typeof leerSeguimiento>
     activa: Leido<typeof leerPestana>
     arbol: Leido<typeof leerArbol>
     confirmando: Leido<typeof leerConfirmar>

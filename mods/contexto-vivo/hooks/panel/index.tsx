@@ -10,8 +10,9 @@ import { horaVisible } from '../contexto/limites'
 import { quesitos } from '../contexto/reparto'
 import { tendencia } from '../contexto/tendencia'
 import { leerArbol } from '../estado/arbol'
-import { leerFoto, leerHistorial, leerIgnorados, leerLlamadas, leerSubagentes, leerTotal } from '../estado/contexto'
+import { leerFoto, leerHistorial, leerIgnorados, leerLlamadas, leerSeguimiento, leerSubagentes, leerTotal } from '../estado/contexto'
 import { cambiarPestana, leerConfirmar, leerPestana } from '../estado/panel'
+import { sinResolver } from '../ia/informe'
 import { selectorEnPanel } from '../selector/banda'
 import { cabecera as dibujarCabecera, limitesUso as dibujarLimites } from './cabecera'
 import { vistaArbol } from './pestanas/arbol'
@@ -46,6 +47,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const turnos = await leerHistorial($)
   const agentes = await leerSubagentes($)
   const omitidos = await leerIgnorados($)
+  const seguimiento = await leerSeguimiento($)
   const activa = await leerPestana($)
   const arbol = await leerArbol($)
   const confirmando = await leerConfirmar($)
@@ -60,6 +62,8 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const qs = quesitos(f, lista)
   const sumaQs = qs.reduce((s, q) => s + q.tokens, 0)
   const hallazgos = diagnosticar(f, lista, cfg, omitidos)
+  // Los resueltos con IA (o a mano) no cuentan como avisos.
+  const pendientes = sinResolver(hallazgos, seguimiento).length
   const ritmo = tendencia(turnos, f, t)
   const compactaPct = f?.compacta == null || ventana === undefined ? null : Math.round((f.compacta / ventana) * 100)
   const cercaDeCompactar = porcentaje !== undefined && porcentaje >= cfg.aviso - 10
@@ -68,7 +72,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const piezas = crearPiezas($, { Box, Text, Button, confirmando, interior })
   const c: Ctx = {
     e, cfg, tabla, Box, Text, Button,
-    t, f, lista, turnos, agentes, omitidos, activa, arbol, confirmando, ahora,
+    t, f, lista, turnos, agentes, omitidos, seguimiento, activa, arbol, confirmando, ahora,
     ancho, interior, porcentaje, tokens, ventana, color, qs, sumaQs, hallazgos, ritmo, compactaPct,
     cercaDeCompactar, activos,
     ...piezas,
@@ -79,7 +83,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
 
   // ── Pestañas ───────────────────────────────────────────────────────────────
   const contador: Partial<Record<Pestana, string>> = {
-    diagnostico: hallazgos.length > 0 ? ` ${hallazgos.length}` : '',
+    diagnostico: pendientes > 0 ? ` ${pendientes}` : '',
     subagentes: activos > 0 ? ` ${activos}` : '',
     arbol: arbol === null || arbol.nodos.length === 0 ? '' : ` ${arbol.nodos.length}`,
   }

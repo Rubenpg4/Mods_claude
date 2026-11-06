@@ -91,8 +91,8 @@ mods/contexto-vivo/
 | `contexto/tendencia.ts` | Crecimiento por turno y turnos hasta compactar | ✔ |
 | `contexto/informes.ts` | `pie` (cola de la fila) e `informe` (`/contexto-top`) | ✔ |
 | `contexto/ignorados.ts` | Hallazgos ignorados, guardados en `$.store` | |
-| `ia/informe.ts` | Informe Markdown de un hallazgo, encargo por tipo, título y nombre de fichero | ✔ |
-| `ia/lanzar.ts` | Escribe el informe y abre `claude` aparte (Windows Terminal o consola, PowerShell 7) | |
+| `ia/informe.ts` | Informe Markdown de un hallazgo, encargo por tipo, título y nombre de fichero; `resolucionIA` (lee «## Resuelto») y `sinResolver` | ✔ |
+| `ia/lanzar.ts` | Escribe el informe, abre `claude` aparte (Windows Terminal o consola, PowerShell 7) y sigue el hallazgo hasta que se resuelve | |
 | `selector/modelos.ts` | Modelos y niveles ofrecidos y sus colores | ✔ |
 | `selector/aplicar.ts` | Aplicar al momento o al final del turno; ocultar el eco de los comandos propios | |
 | `selector/banda.tsx` | Dibujo de la banda y de su versión en el panel | |
@@ -128,6 +128,7 @@ Cada átomo está en el mismo fichero que sus `leer…`/`cambiar…`. `leer…` 
 | `historial` | historial-1 | estado/contexto | Últimos 120 turnos | `registrarTurno` | panel, fila |
 | `subagentes` | subagentes-1 | estado/contexto | Últimos 12 subagentes | `registrarPaso`, `terminarSubagente` | panel |
 | `ignorados` | ignorados-1 | estado/contexto | Claves ignoradas (copia de `$.store`) | `ignorar`, `cargarIgnorados` | diagnóstico |
+| `seguimiento` | seguimiento-1 | estado/contexto | Hallazgos de este proyecto llevados a la IA, en curso o resueltos (copia de `$.store`) | `resolverConIA`, `comprobarResueltos`, `marcarResuelto`, `reabrir`, `cargarSeguimiento` | diagnóstico, fila, `/contexto-top` |
 | `ultimoPrompt` | prompt-1 | estado/contexto | Texto del último prompt | `prompt.submit` | `registrarTurno` |
 | `ahora` | ahora-1 | estado/contexto | Hora del tic de cada minuto | `marcarHora` | cuenta atrás |
 | `pestana` | pestana-1 | estado/panel | Pestaña activa | barra de pestañas, `/cp-arbol` | panel |
@@ -148,7 +149,7 @@ Cada átomo está en el mismo fichero que sus `leer…`/`cambiar…`. `leer…` 
 
 **Otros sitios donde se guarda algo**
 
-- En `$.store`: `ignorados`, `limites` (última lectura, para mostrarla nada más abrir) y `arbol-abrir` (la sesión que debe abrir la pestaña Árbol tras un `/resume`).
+- En `$.store`: `ignorados`, `seguimiento` (los hallazgos llevados a la IA, de todos los proyectos, hasta 100), `limites` (última lectura, para mostrarla nada más abrir) y `arbol-abrir` (la sesión que debe abrir la pestaña Árbol tras un `/resume`).
 - En disco, bajo `carpetaDatos`: `ramas/<proyecto>/indice.json`, `ramas/<proyecto>/busqueda.json`, `ramas/<proyecto>/exportes/*.md` e `informes/<proyecto>/*.md`.
 - En variables del propio módulo, que solo pueden modificarse dentro de su fichero:
 
@@ -159,6 +160,7 @@ Cada átomo está en el mismo fichero que sus `leer…`/`cambiar…`. `leer…` 
 | `marcas` | contexto/medicion.ts | Tras compactar no se avisa de que la caché se invalidó |
 | `turno`, `propios` | selector/aplicar.ts | Si hay turno en marcha; comandos lanzados por el mod |
 | `tic` | register.tsx | Temporizador de cada minuto |
+| `sondeo` | ia/lanzar.ts | Lee cada 10 s los informes en curso, solo mientras haya alguno |
 
 ## 4. Eventos y comandos
 
@@ -250,6 +252,11 @@ Cada hallazgo lleva `pruebas` (llamadas, argumentos, tamaños) y, si hay, `muest
 1. Escribe el informe en `informes/<proyecto>/<fecha>-<clave>.md`, con un encargo distinto según el tipo (`ENCARGOS`).
 2. Abre `claude --model sonnet --effort high -n <título> <prompt>`: primero en una pestaña de Windows Terminal (`wt.exe`) y, si no hay, con `cmd /c start`. En los dos casos con PowerShell 7 `-NoExit` y la orden en `-EncodedCommand`, para que no se rompan comillas ni acentos.
 3. Si no puede abrir ninguna terminal, copia la orden al portapapeles.
+4. Apunta el hallazgo **en curso** en `seguimiento` (`$.store` y átomo) y arranca el `sondeo`.
+
+**Seguimiento hasta resolverlo.** El informe termina pidiendo a la sesión aparte que, cuando el cambio esté aplicado y aprobado, añada al final una línea `## Resuelto` y debajo lo que se cambió (`MARCA_RESUELTO`). Mientras haya hallazgos en curso, `comprobarResueltos` lee cada `SONDEO_MS` (10 s) sus informes; `resolucionIA` devuelve el texto bajo esa línea (hasta el siguiente título) y el hallazgo pasa a resuelto con la hora y ese resumen, con un aviso emergente. Se compara con lo guardado en `$.store`, así que si otra sesión con el mod (la propia sesión aparte también lo carga) lo marca antes, el cambio se ve igual. La persona puede marcarlo a mano (`marcarResuelto`) o devolverlo a los avisos (`reabrir`).
+
+Los resueltos no cuentan como avisos (`sinResolver`): ni en la pestaña ni en la fila ni en `/contexto-top`. La pestaña los lista aparte, en **✓ Resueltos**, tachados y con el resumen. El seguimiento va por clave y proyecto: la misma clave en otro proyecto es otro hallazgo.
 
 **Avisos emergentes** (`refrescar` y `registrarLlamada`): al cruzar el aviso o la alerta, a la tercera lectura del mismo fichero, cuando una llamada añade ≥ `golpe` y cuando la caché se invalida (antes ≥ 80 %, ahora < 50 % y ≥ 20 000 tokens reescritos, salvo justo después de compactar).
 
