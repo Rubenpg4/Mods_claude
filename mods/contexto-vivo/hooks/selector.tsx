@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
 import type { Nivel } from '../types'
-import { css } from './calculo'
+import { css, encima, FONDO_ENCIMA, mezcla, sinInvertir, tinta } from './calculo'
 import { cambiarAplicado, cambiarSelector, leerAplicado, leerSelector } from './estado'
 
 // El selector de modelo y esfuerzo: una banda fija sobre el prompt, plegada en
@@ -24,16 +24,16 @@ export const MODELOS: Modelo[] = [
   { id: 'claude-haiku-5-5', nombre: 'Haiku 5.5', familia: 'haiku', nota: 'rápido', rgb: 0x30d158, tecla: '4' },
 ]
 
-// De menos a más, con las teclas de la fila de arriba en el mismo orden.
-export const NIVELES: { id: Nivel; tecla: string }[] = [
-  { id: 'low', tecla: 'q' },
-  { id: 'medium', tecla: 'w' },
-  { id: 'high', tecla: 'e' },
-  { id: 'xhigh', tecla: 'r' },
-  { id: 'max', tecla: 't' },
-]
+// De menos a más: el orden de los tramos de la barra del esfuerzo.
+export const NIVELES: { id: Nivel }[] = [{ id: 'low' }, { id: 'medium' }, { id: 'high' }, { id: 'xhigh' }, { id: 'max' }]
 
 const NEUTRO = 0x8e8e93
+// El gris del que parte el degradado del esfuerzo, y cuánto color lleva cada
+// nivel: low apenas tiñe, max es el color pleno del modelo.
+const BASE_ESFUERZO = 0x48484a
+const INTENSIDAD = [0.42, 0.58, 0.72, 0.86, 1]
+// Ancho de cada tramo de la barra del esfuerzo: «medium» y un espacio a cada lado.
+const TRAMO = 8
 
 // El modelo conocido que nombra un id o alias (`claude-opus-5-5[1m]`, `opus`).
 export function modeloDe(texto: string | null): Modelo | undefined {
@@ -46,10 +46,20 @@ export function esNivel(x: unknown): x is Nivel {
   return NIVELES.some(n => n.id === x)
 }
 
-// ▰▰▰▱▱: lo alto que está el esfuerzo entre los cinco niveles.
-export function medidor(nivel: string | null): string {
-  const i = NIVELES.findIndex(n => n.id === nivel)
-  return i < 0 ? '▱▱▱▱▱' : '▰'.repeat(i + 1) + '▱'.repeat(NIVELES.length - i - 1)
+// El color de un tramo de la barra del esfuerzo: más intenso cuanto más alto.
+export function colorEsfuerzo(i: number, rgb: number): number {
+  return mezcla(BASE_ESFUERZO, rgb, INTENSIDAD[Math.max(0, Math.min(INTENSIDAD.length - 1, i))] ?? 1)
+}
+
+// Hasta qué tramo está llena la barra (-1: el esfuerzo por defecto).
+export function posicionEsfuerzo(nivel: string | null): number {
+  return NIVELES.findIndex(n => n.id === nivel)
+}
+
+// La etiqueta de un tramo, centrada en su ancho para que la barra no se mueva.
+export function etiquetaTramo(nivel: Nivel): string {
+  const hueco = TRAMO - nivel.length
+  return ' '.repeat(Math.floor(hueco / 2)) + nivel + ' '.repeat(Math.ceil(hueco / 2))
 }
 
 // Si la conversación principal tiene un turno en marcha: lo pulsado entonces
@@ -158,6 +168,23 @@ export async function elegirEsfuerzo($: EngineInterface, nivel: Nivel): Promise<
   else await aplicarEsfuerzo($, nivel)
 }
 
+// Vuelve al modelo y al esfuerzo guardados en un checkpoint, si no son ya los
+// de la sesión. El esfuerzo va después del modelo: se guarda por modelo, así
+// que tras cambiar de modelo se aplica siempre. Devuelve lo que cambió.
+export async function restaurarModo($: EngineInterface, modelo?: string, esfuerzo?: string): Promise<string[]> {
+  const cambios: string[] = []
+  const m = modeloDe(modelo ?? null)
+  if (m !== undefined && modeloDe(await $.session.model().catch(() => null))?.id !== m.id) {
+    await aplicarModelo($, m)
+    cambios.push(m.nombre)
+  }
+  if (esNivel(esfuerzo) && (cambios.length > 0 || (await leerAplicado($)).esfuerzo !== esfuerzo)) {
+    await aplicarEsfuerzo($, esfuerzo)
+    cambios.push(esfuerzo)
+  }
+  return cambios
+}
+
 // Un /effort escrito a mano manda sobre lo que esperaba al final del turno.
 export async function soltarEsfuerzo($: EngineInterface): Promise<void> {
   const s = await leerSelector($)
@@ -209,77 +236,120 @@ async function situacion($: EngineInterface) {
   }
 }
 
-// La línea plegada: un solo botón que despliega.
-function lineaPlegada(t: Tabla, s: Awaited<ReturnType<typeof situacion>>, alPulsar: () => void, pista: string) {
+type Situacion = Awaited<ReturnType<typeof situacion>>
+// Dónde se dibuja el selector: cada sitio tiene sus propios grupos de hover,
+// para que pasar por la banda no ilumine el panel ni al revés.
+type Sitio = 'banda' | 'panel'
+
+// La barra del esfuerzo en pequeño, para la línea plegada: los cinco tramos
+// en su degradado; los de encima del nivel actual, punteados.
+function barraMini(t: Tabla, s: Situacion): unknown[] {
+  const { Text } = t
+  const hasta = posicionEsfuerzo(s.nivel)
+  return NIVELES.map((n, i) => (
+    <Text key={`mini-${n.id}`} color={css(colorEsfuerzo(i, s.rgb))} dimColor={i > hasta}>
+      {i <= hasta ? '━━' : '╌╌'}
+    </Text>
+  ))
+}
+
+// La línea plegada: un solo botón que despliega. Al pasar por encima, la pista
+// se enciende como un enlace en lugar de invertirse la línea entera.
+function lineaPlegada(t: Tabla, s: Situacion, alPulsar: () => void, pista: string, sitio: Sitio) {
   const { Button, Text } = t
+  const id = `${sitio}-desplegar`
   const pendiente = s.sel.modelo !== null || s.sel.esfuerzo !== null
   return (
-    <Button key="selector-desplegar" plain onPress={alPulsar}>
+    <Button key="selector-desplegar" plain hover={sinInvertir(id)} onPress={alPulsar}>
       <Text color={css(s.rgb)} weight="bold">{`◆ ${s.nombre}`}</Text>
-      <Text dimColor>{'  ·  esfuerzo '}</Text>
-      <Text color={css(s.rgb)}>{medidor(s.nivel)}</Text>
-      <Text weight="bold">{` ${s.nivel ?? 'por defecto'}`}</Text>
-      {pendiente ? <Text color="warning">{'  ⧗ al acabar el turno'}</Text> : null}
-      <Text dimColor>{`   ${pista}`}</Text>
+      <Text dimColor>{'   esfuerzo '}</Text>
+      {barraMini(t, s)}
+      <Text color={s.nivel === null ? undefined : css(colorEsfuerzo(posicionEsfuerzo(s.nivel), s.rgb))} weight="bold">
+        {` ${s.nivel ?? 'por defecto'}`}
+      </Text>
+      {pendiente ? <Text color="warning">{'   ⧗ al acabar el turno'}</Text> : null}
+      <Text>{'   '}</Text>
+      <Text dimColor hover={encima(id, { dimColor: false, color: 'suggestion', underline: true })}>
+        {pista}
+      </Text>
     </Button>
   )
 }
 
-// Los chips de modelos y de esfuerzo, con su tecla.
-function chips($: EngineInterface, t: Tabla, s: Awaited<ReturnType<typeof situacion>>, conTeclas: boolean) {
+// Las píldoras de los modelos: ● la del modelo actual, rellena de su color;
+// ○ las demás, en su color y con fondo suave al pasar; ⧗ la que espera turno.
+function filaModelos($: EngineInterface, t: Tabla, s: Situacion, conTeclas: boolean, sitio: Sitio) {
   const { Box, Button, Text } = t
-  const filaModelos = (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+  return (
+    <Box flexDirection="row" flexWrap="wrap" columnGap={conTeclas ? 2 : 1}>
+      <Text dimColor>{'modelo   '}</Text>
       {MODELOS.map(m => {
+        const id = `${sitio}-modelo-${m.familia}`
         const activo = s.actual?.id === m.id
         const esperando = s.sel.modelo === m.id
         return (
           <Button
             key={`selector-modelo-${m.familia}`}
             plain
+            hover={sinInvertir(id)}
             {...(conTeclas ? { hotkey: m.tecla } : {})}
             onPress={() => void elegirModelo($, m)}
           >
             {/* Mismo ancho en todos los estados: la fila no se recoloca. */}
             {activo ? (
-              <Text backgroundColor={css(m.rgb)} color="#000000" weight="bold">{` ● ${m.nombre} `}</Text>
+              <Text backgroundColor={css(m.rgb)} color={tinta(m.rgb)} weight="bold">{` ● ${m.nombre} `}</Text>
             ) : esperando ? (
-              <Text color="warning" weight="bold">{` ⧗ ${m.nombre} `}</Text>
+              <Text color="warning" weight="bold" hover={encima(id, { backgroundColor: FONDO_ENCIMA })}>
+                {` ⧗ ${m.nombre} `}
+              </Text>
             ) : (
-              <Text color={css(m.rgb)}>{`   ${m.nombre} `}</Text>
+              <Text color={css(m.rgb)} hover={encima(id, { backgroundColor: FONDO_ENCIMA, bold: true })}>
+                {` ○ ${m.nombre} `}
+              </Text>
             )}
           </Button>
         )
       })}
     </Box>
   )
-  const filaNiveles = (
-    <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-      <Text dimColor>{'esfuerzo'}</Text>
-      <Text color={css(s.rgb)}>{medidor(s.nivel)}</Text>
-      {NIVELES.map(n => {
-        const activo = s.nivel === n.id
+}
+
+// La barra del esfuerzo: cinco tramos seguidos, cada uno un botón con su nivel
+// dentro y su color del degradado (low apenas tiñe, max es el color pleno del
+// modelo). El nivel actual va en negrita con la tinta plena; los demás, con la
+// tinta atenuada. Al pasar por un tramo se enciende con el color pleno, como
+// anticipo de elegirlo; el que espera al final del turno va en ámbar.
+//
+// Sin teclas: la tecla de un botón se dibuja delante («q: ») y partiría la
+// barra en trozos. Se elige con el ratón, o con `/modelo <nivel>` desde el prompt.
+function filaEsfuerzo($: EngineInterface, t: Tabla, s: Situacion, sitio: Sitio) {
+  const { Box, Button, Text } = t
+  const actual = posicionEsfuerzo(s.nivel)
+  return (
+    <Box flexDirection="row" flexWrap="wrap">
+      <Text dimColor>{'esfuerzo '}</Text>
+      {NIVELES.map((n, i) => {
+        const id = `${sitio}-esfuerzo-${n.id}`
         const esperando = s.sel.esfuerzo === n.id
+        const color = colorEsfuerzo(i, s.rgb)
+        const destacado = i === actual || esperando
         return (
-          <Button
-            key={`selector-esfuerzo-${n.id}`}
-            plain
-            {...(conTeclas ? { hotkey: n.tecla } : {})}
-            onPress={() => void elegirEsfuerzo($, n.id)}
-          >
-            {activo ? (
-              <Text inverse weight="bold">{` ${n.id} `}</Text>
-            ) : esperando ? (
-              <Text color="warning" weight="bold" underline>{` ${n.id} `}</Text>
-            ) : (
-              <Text dimColor>{` ${n.id} `}</Text>
-            )}
+          <Button key={`selector-esfuerzo-${n.id}`} plain hover={sinInvertir(id)} onPress={() => void elegirEsfuerzo($, n.id)}>
+            <Text
+              backgroundColor={esperando ? 'warning' : css(color)}
+              color={esperando ? '#000000' : tinta(color)}
+              dimColor={!destacado}
+              weight={destacado ? 'bold' : undefined}
+              hover={encima(id, { backgroundColor: css(s.rgb), color: tinta(s.rgb), dimColor: false, bold: true })}
+            >
+              {etiquetaTramo(n.id)}
+            </Text>
           </Button>
         )
       })}
+      {actual < 0 && s.sel.esfuerzo === null ? <Text dimColor>{'  por defecto'}</Text> : null}
     </Box>
   )
-  return [filaModelos, filaNiveles]
 }
 
 export type RenderBanda = { surface: string; props: { hasSurvey: boolean; bodyColumns: number } }
@@ -293,7 +363,7 @@ export async function dibujarBanda($: EngineInterface, e: RenderBanda, debajo: u
   const s = await situacion($)
 
   const propio = !s.sel.desplegado ? (
-    lineaPlegada(t, s, () => void desplegar($, true), '▾ cambiar')
+    lineaPlegada(t, s, () => void desplegar($, true), '▾ cambiar', 'banda')
   ) : (
     <Box flexDirection="column" borderStyle="round" borderColor={css(s.rgb)} paddingX={1}>
       <Box flexDirection="row" justifyContent="space-between">
@@ -301,15 +371,24 @@ export async function dibujarBanda($: EngineInterface, e: RenderBanda, debajo: u
           <Text color={css(s.rgb)} weight="bold">{`◆ ${s.nombre}`}</Text>
           <Text dimColor>{s.actual === undefined ? '' : `  ${s.actual.nota}`}</Text>
         </Text>
-        <Button key="selector-plegar" plain hotkey="x" onPress={() => void desplegar($, false)}>
-          <Text dimColor>▴ plegar</Text>
+        <Button
+          key="selector-plegar"
+          plain
+          hotkey="x"
+          hover={sinInvertir('banda-plegar')}
+          onPress={() => void desplegar($, false)}
+        >
+          <Text dimColor hover={encima('banda-plegar', { dimColor: false, color: 'suggestion', underline: true })}>
+            ▴ plegar
+          </Text>
         </Button>
       </Box>
-      {chips($, t, s, true)}
+      {filaModelos($, t, s, true, 'banda')}
+      {filaEsfuerzo($, t, s, 'banda')}
       <Text dimColor wrap="truncate">
         {s.sel.modelo !== null || s.sel.esfuerzo !== null
           ? '⧗ se aplicará en cuanto acabe el turno en curso'
-          : 'cambia el /model y el /effort de la sesión · teclas 1-4 y q-t con la banda enfocada (ctrl+x tab)'}
+          : 'cambia el /model y el /effort de la sesión · teclas 1-4 y x con la banda enfocada (ctrl+x tab)'}
       </Text>
     </Box>
   )
@@ -323,13 +402,24 @@ export async function dibujarBanda($: EngineInterface, e: RenderBanda, debajo: u
   )
 }
 
-// En el panel /contexto: donde hay banda (terminal y escritorio), una línea que
-// la despliega; donde no (VS Code, móvil), los chips completos.
+// En el panel /ctx: donde hay banda (terminal y escritorio), una línea que
+// la despliega; donde no (VS Code, móvil), las píldoras y la barra completas.
 export async function selectorEnPanel($: EngineInterface, t: Tabla, surface: string): Promise<unknown> {
   const s = await situacion($)
   if (surface === 'terminal' || surface === 'desktop') {
-    return lineaPlegada(t, s, () => void desplegar($, !s.sel.desplegado), s.sel.desplegado ? '▴ plegar banda' : '▾ cambiar')
+    return lineaPlegada(
+      t,
+      s,
+      () => void desplegar($, !s.sel.desplegado),
+      s.sel.desplegado ? '▴ plegar banda' : '▾ cambiar',
+      'panel',
+    )
   }
   const { Box } = t
-  return <Box flexDirection="column">{chips($, t, s, false)}</Box>
+  return (
+    <Box flexDirection="column">
+      {filaModelos($, t, s, false, 'panel')}
+      {filaEsfuerzo($, t, s, 'panel')}
+    </Box>
+  )
 }

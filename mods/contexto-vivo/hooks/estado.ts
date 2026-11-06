@@ -8,6 +8,7 @@ import type {
   Consulta,
   Fila,
   Foto,
+  Limite,
   Llamada,
   Pestana,
   Selector,
@@ -24,7 +25,11 @@ const llamadas = atom({ plugin: 'contexto-vivo', key: 'llamadas' } as const, [],
   shape: 'llamadas-2',
 })
 const total = atom({ plugin: 'contexto-vivo', key: 'total' } as const, null, {
-  shape: 'total-4',
+  // -5: los límites de uso pasan a su propio valor.
+  shape: 'total-5',
+})
+const limites = atom({ plugin: 'contexto-vivo', key: 'limites' } as const, [], {
+  shape: 'limites-1',
 })
 const foto = atom({ plugin: 'contexto-vivo', key: 'foto' } as const, null, {
   shape: 'foto-3',
@@ -65,7 +70,8 @@ const ahora = atom({ plugin: 'contexto-vivo', key: 'ahora' } as const, 0, {
   shape: 'ahora-1',
 })
 const arbol = atom({ plugin: 'contexto-vivo', key: 'arbol' } as const, null, {
-  shape: 'arbol-2',
+  // -3: los nodos abandonados por un rewind y el aviso pendiente.
+  shape: 'arbol-3',
 })
 const head = atom({ plugin: 'contexto-vivo', key: 'head' } as const, null, {
   shape: 'head-2',
@@ -78,6 +84,9 @@ const verTodo = atom({ plugin: 'contexto-vivo', key: 'verTodo' } as const, false
 })
 const borrando = atom({ plugin: 'contexto-vivo', key: 'borrando' } as const, null, {
   shape: 'borrando-1',
+})
+const restaurando = atom({ plugin: 'contexto-vivo', key: 'restaurando' } as const, null, {
+  shape: 'restaurando-1',
 })
 const ocupado = atom({ plugin: 'contexto-vivo', key: 'ocupado' } as const, null, {
   shape: 'ocupado-1',
@@ -114,6 +123,13 @@ export function cambiarLlamadas($: $, f: Cambio<Llamada[]>) {
 
 export function leerTotal($: $) {
   return read($, total)
+}
+
+export function leerLimites($: $) {
+  return read($, limites)
+}
+export function cambiarLimites($: $, f: Cambio<Limite[]>) {
+  return update($, limites, f)
 }
 
 export function leerAhora($: $) {
@@ -239,6 +255,13 @@ export function leerBorrando($: $) {
 }
 export function cambiarBorrando($: $, f: Cambio<string | null>) {
   return update($, borrando, f)
+}
+
+export function leerRestaurando($: $) {
+  return read($, restaurando)
+}
+export function cambiarRestaurando($: $, f: Cambio<string | null>) {
+  return update($, restaurando, f)
 }
 
 export function leerOcupado($: $) {

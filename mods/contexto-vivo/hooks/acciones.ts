@@ -1,16 +1,22 @@
-import type { EngineInterface, ModelUsage } from 'claude-code'
+import type { EngineInterface, ModelUsage, RenderSurface, SessionRateLimit } from 'claude-code'
 
-import type { Foto, Limite, Llamada, Total } from '../types'
+import type { Foto, Hallazgo, Limite, Llamada, Total } from '../types'
 import {
   CARACTERES_POR_TOKEN,
   CATEGORIAS,
   corta,
   enLinea,
+  ESFUERZO_IA,
   etiquetar,
+  ficheroIA,
+  informeIA,
   k,
+  MODELO_IA,
   nombreHerramienta,
   ordenar,
+  promptIA,
   sector,
+  tituloIA,
   VENTANAS,
 } from './calculo'
 import type { Config } from './config'
@@ -21,11 +27,14 @@ import {
   cambiarFoto,
   cambiarHistorial,
   cambiarIgnorados,
+  cambiarLimites,
   cambiarLlamadas,
   cambiarMensajes,
   cambiarSubagentes,
   cambiarTotal,
+  leerAhora,
   leerAviso,
+  leerLimites,
   leerConservar,
   leerLlamadas,
   leerSubagentes,
@@ -34,6 +43,7 @@ import {
 } from './estado'
 
 const CLAVE_IGNORADOS = 'ignorados'
+const CLAVE_LIMITES = 'limites'
 
 // Tras compactar, la primera petición reescribe la caché por fuerza: no avisar.
 const marcas = { recienCompactado: false }
@@ -48,15 +58,28 @@ export async function marcarHora($: EngineInterface): Promise<void> {
   await cambiarAhora($, () => ahora)
 }
 
-// Ocupación y caché tras una respuesta de la conversación principal; avisa al
-// cruzar los umbrales y cuando la caché se invalida.
-export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsage | null = null): Promise<void> {
-  // La cifra va en la fila de «auto mode on»: nada en la línea de estado.
-  $.ui.status(undefined)
-  const { context, rateLimits } = await $.session.usage()
-  if (context.tokens === undefined || context.percent === undefined) return
-  await marcarHora($)
-  const limites: Limite[] = rateLimits
+// ── Ventanas de uso (5h, 7d) ────────────────────────────────────────────────
+//
+// El motor solo las conoce tras una respuesta de la API: al abrir claude no hay
+// ninguna. La última lectura se guarda en `$.store` y se carga al empezar, así
+// la fila y el panel las muestran desde el primer minuto; la primera respuesta
+// las renueva. Una ventana cuyo reinicio ya pasó se ve vacía (`ventanas`).
+
+function esLimite(x: unknown): x is Limite {
+  const l = x as Partial<Limite> | null
+  return (
+    l !== null &&
+    typeof l === 'object' &&
+    typeof l.tipo === 'string' &&
+    typeof l.libre === 'number' &&
+    (l.reinicio === undefined || typeof l.reinicio === 'number')
+  )
+}
+
+// Apunta las ventanas que trae una medida del motor; sin ninguna (aún no ha
+// habido respuesta) se queda la lectura anterior.
+export async function apuntarLimites($: EngineInterface, rateLimits: readonly SessionRateLimit[]): Promise<void> {
+  const nuevos: Limite[] = rateLimits
     .filter(l => l.kind in VENTANAS)
     .map(l => {
       const reinicio = l.resetsAt === undefined ? NaN : Date.parse(l.resetsAt)
@@ -66,6 +89,51 @@ export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsa
         ...(Number.isFinite(reinicio) ? { reinicio } : {}),
       }
     })
+  if (nuevos.length === 0) return
+  let cambio = false
+  await cambiarLimites($, previos => {
+    cambio = JSON.stringify(previos) !== JSON.stringify(nuevos)
+    return cambio ? nuevos : previos
+  })
+  if (cambio) await $.store.set(CLAVE_LIMITES, nuevos)
+}
+
+async function limitesGuardados($: EngineInterface): Promise<Limite[]> {
+  const guardados = await $.store.get(CLAVE_LIMITES)
+  return Array.isArray(guardados) ? guardados.filter(esLimite) : []
+}
+
+// La última lectura guardada, si en esta sesión aún no hay ninguna.
+export async function cargarLimites($: EngineInterface): Promise<void> {
+  const validos = await limitesGuardados($)
+  if (validos.length > 0) await cambiarLimites($, actuales => (actuales.length > 0 ? actuales : validos))
+}
+
+// Lo que dibujan la fila y el panel: la lectura de la sesión o, mientras no
+// hay ninguna (justo tras /clear, que no pasa por `session.start`), la
+// guardada. Leer el valor primero suscribe el dibujo a él.
+export async function limitesVisibles($: EngineInterface): Promise<Limite[]> {
+  const actuales = await leerLimites($)
+  return actuales.length > 0 ? actuales : limitesGuardados($)
+}
+
+// La hora para la cuenta atrás: la del tic de cada minuto (suscribe el dibujo)
+// o, si aún no ha marcado ninguna, la del reloj.
+export async function horaVisible($: EngineInterface): Promise<number> {
+  const ahora = await leerAhora($)
+  return ahora > 0 ? ahora : $.clock.now()
+}
+
+// Ocupación y caché tras una respuesta de la conversación principal; avisa al
+// cruzar los umbrales y cuando la caché se invalida.
+export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsage | null = null): Promise<void> {
+  // La cifra va en la fila de «auto mode on»: nada en la línea de estado.
+  $.ui.status(undefined)
+  const { context, rateLimits } = await $.session.usage()
+  // Los límites no dependen de la conversación: se apuntan aunque esté vacía.
+  await apuntarLimites($, rateLimits)
+  await marcarHora($)
+  if (context.tokens === undefined || context.percent === undefined) return
   const anterior = await leerTotal($)
   const entrada = usage === null ? 0 : tokensDe(usage)
   const cache = usage === null || entrada === 0 ? (anterior?.cache ?? null) : Math.round((usage.cache_read_input_tokens / entrada) * 100)
@@ -73,7 +141,6 @@ export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsa
     tokens: context.tokens,
     ventana: context.window,
     porcentaje: context.percent,
-    limites,
     cache,
     cacheEscrito: usage?.cache_creation_input_tokens ?? anterior?.cacheEscrito ?? 0,
   }
@@ -148,6 +215,25 @@ export async function fotografiar($: EngineInterface, detalle: 'summary' | 'full
   await cambiarFoto($, () => nueva)
 }
 
+// Las claves de `tool.call` que no son argumentos de la herramienta.
+const RESERVADAS = new Set(['tool', 'tool_use_id', 'consent', 'agentId'])
+const LARGO_ENTRADA = 400
+const LARGO_MUESTRA = 600
+
+// Los argumentos de una llamada en JSON compacto y recortado: la prueba de qué
+// se pidió (el comando, la consulta, el offset/limit…).
+export function resumirEntrada(entrada: Record<string, unknown>): string | undefined {
+  const propios = Object.fromEntries(Object.entries(entrada).filter(([clave]) => !RESERVADAS.has(clave)))
+  if (Object.keys(propios).length === 0) return undefined
+  let texto: string
+  try {
+    texto = JSON.stringify(propios)
+  } catch {
+    return undefined
+  }
+  return texto.length > LARGO_ENTRADA ? `${texto.slice(0, LARGO_ENTRADA)}…` : texto
+}
+
 // Lo que la conversación principal acaba de recibir de una herramienta.
 export async function registrarLlamada(
   $: EngineInterface,
@@ -169,6 +255,9 @@ export async function registrarLlamada(
       tokens,
       ruta,
       parcial: entrada.offset !== undefined || entrada.limit !== undefined,
+      entrada: resumirEntrada(entrada),
+      // De una lectura basta la ruta: el fichero se puede volver a abrir.
+      muestra: herramienta === 'Read' || texto.trim() === '' ? undefined : texto.slice(0, LARGO_MUESTRA),
     },
   ])
   if (!cfg.emergentes) return
@@ -317,4 +406,100 @@ export async function cargarMensajes($: EngineInterface): Promise<void> {
     tokens: Math.ceil(m.text.length / CARACTERES_POR_TOKEN),
   }))
   await cambiarMensajes($, () => ordenar(filas, 20))
+}
+
+// ── Resolver con IA ─────────────────────────────────────────────────────────
+
+// La carpeta de datos del mod: `contexto-vivo/<sub>` en la `.claude` sobre la
+// del mod; si el mod no está bajo una, en la `.claude` del proyecto.
+export async function carpetaDatos($: EngineInterface, sub: string): Promise<string> {
+  const raiz = (await $.session.root()).replace(/\\/g, '/')
+  const proyecto = raiz.replace(/[^A-Za-z0-9]/g, '-')
+  const mod = $.plugin.root.replace(/\\/g, '/')
+  const i = mod.lastIndexOf('/.claude/')
+  const claude = i >= 0 ? mod.slice(0, i + 8) : `${raiz}/.claude`
+  return `${claude}/contexto-vivo/${sub}/${proyecto}`
+}
+
+// Los argumentos de `claude` para la sesión aparte.
+export function argumentosIA(titulo: string, prompt: string): string[] {
+  return ['--model', MODELO_IA, '--effort', ESFUERZO_IA, '-n', titulo, prompt]
+}
+
+// La orden de PowerShell que arranca la sesión aparte, con cada argumento
+// entre comillas simples (una comilla simple se dobla).
+export function ordenPwsh(titulo: string, prompt: string): string {
+  return ['claude', ...argumentosIA(titulo, prompt).map(a => (/^[A-Za-z0-9-]+$/.test(a) ? a : `'${a.replace(/'/g, "''")}'`))].join(' ')
+}
+
+// Una orden para `pwsh -EncodedCommand`: UTF-16LE en base64. Así ni Windows
+// Terminal (que parte en `;`) ni cmd ni pwsh tocan comillas ni acentos.
+export function codificarPwsh(orden: string): string {
+  let binario = ''
+  for (let i = 0; i < orden.length; i++) {
+    const c = orden.charCodeAt(i)
+    binario += String.fromCharCode(c & 0xff, c >> 8)
+  }
+  return btoa(binario)
+}
+
+// Las órdenes con que se intenta abrir la sesión aparte, por orden: una
+// pestaña nueva en la ventana de Windows Terminal más reciente (con el perfil
+// por defecto) y, si no está, una consola con `start`. En las dos corre
+// PowerShell 7 con -NoExit: al salir de Claude queda la consola en el proyecto.
+export function lanzadoresIA(directorio: string, titulo: string, prompt: string): string[][] {
+  const pwsh = ['pwsh', '-NoLogo', '-NoExit', '-EncodedCommand', codificarPwsh(ordenPwsh(titulo, prompt))]
+  return [
+    ['wt.exe', '-w', '0', 'new-tab', '-d', directorio, ...pwsh],
+    ['cmd', '/c', 'start', '', '/D', directorio, ...pwsh],
+  ]
+}
+
+// Escribe el informe del hallazgo y abre una sesión de Claude Code aparte
+// (Sonnet, esfuerzo alto) en el proyecto que empieza leyéndolo. Si no se puede
+// abrir una terminal, copia la orden para pegarla a mano.
+export async function resolverConIA($: EngineInterface, h: Hallazgo, superficie?: RenderSurface): Promise<void> {
+  const [raiz, sesion, ahora, total] = await Promise.all([
+    $.session.root(),
+    $.session.id(),
+    $.clock.now(),
+    leerTotal($),
+  ])
+  const fecha = new Date(ahora).toISOString().slice(0, 19).replace('T', ' ')
+  const ruta = `${await carpetaDatos($, 'informes')}/${ficheroIA(h, fecha)}`
+  const informe = informeIA(h, {
+    fecha,
+    proyecto: raiz,
+    sesion,
+    ventana: total?.ventana,
+    porcentaje: total?.porcentaje,
+  })
+  try {
+    await $.fs.write(ruta, informe)
+  } catch (error) {
+    $.ui.toast(`✦ No se pudo escribir el informe: ${error instanceof Error ? error.message : String(error)}`)
+    return
+  }
+  const titulo = tituloIA(h)
+  const prompt = promptIA(ruta)
+  const seguro = !/[&|<>^"%!]/.test(raiz)
+  for (const orden of lanzadoresIA(raiz, titulo, prompt)) {
+    if (orden[0] === 'cmd' && !seguro) continue
+    try {
+      const r = await $.process.run(orden, { timeoutMs: 15_000 })
+      if (r.exitCode === 0) {
+        $.ui.toast(`✦ Chat con ${MODELO_IA} (${ESFUERZO_IA}) abierto para «${h.texto.slice(0, 50)}» · informe en ${corta(ruta)}`)
+        return
+      }
+    } catch {
+      // Sigue con la siguiente.
+    }
+  }
+  const manual = ordenPwsh(titulo, prompt)
+  const copia = await $.ui.copy({ text: manual, ...(superficie === undefined ? {} : { surface: superficie }) })
+  $.ui.toast(
+    copia.isCopied
+      ? `✦ No se pudo abrir una terminal: orden copiada, pégala en una terminal en ${raiz}`
+      : `✦ No se pudo abrir una terminal. Informe en ${ruta}; ábrelo con: ${manual}`,
+  )
 }

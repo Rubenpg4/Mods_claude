@@ -121,7 +121,8 @@ function esPrompt(r) {
   const c = r.message?.content
   if (Array.isArray(c) && c.some(b => b && b.type === 'tool_result')) return false
   const t = textoDe(c).trimStart()
-  return t !== '' && !/^<(command-|local-command-|system-reminder)/.test(t)
+  // La nota del mod al restaurar un punto abandonado tampoco es un prompt.
+  return t !== '' && !/^<(command-|local-command-|system-reminder)/.test(t) && !t.startsWith('[Aviso de contexto-vivo')
 }
 
 // La cadena como la conversación que ve el modelo: un mensaje por turno de

@@ -6,17 +6,24 @@ import {
   cargarMensajes,
   compactar,
   fotografiar,
+  horaVisible,
   ignorar,
+  limitesVisibles,
+  resolverConIA,
   restaurarIgnorados,
 } from './acciones'
 import {
   ancestroComun,
   ancestros,
+  borrables,
+  borrarAbandonados,
   borrarRama,
   buscarNodo,
   checkpoint,
+  conservarAbandonados,
   consultarBusqueda,
   consultarComparacion,
+  descendientes,
   enLinea,
   etiquetaNodo,
   exportarConAviso,
@@ -24,13 +31,17 @@ import {
   forkear,
   hijos,
   injertar,
+  limpiarArbol,
   nombrar,
   restaurar,
+  rewindDe,
+  TODO_EL_ARBOL,
   turnos as nTurnos,
 } from './arbol'
 import {
   barraFina,
   barraRitmo,
+  CARRIL,
   chispa,
   colorCache,
   colorNivel,
@@ -38,8 +49,10 @@ import {
   css,
   diagnosticar,
   duracionCorta,
+  encima,
   entradas,
   familia,
+  FONDO_ENCIMA,
   GRIS,
   k,
   nombreHerramienta,
@@ -50,6 +63,7 @@ import {
   sector,
   segmentos,
   SIN_DETALLE,
+  sinInvertir,
   tendencia,
   ventanas,
 } from './calculo'
@@ -62,11 +76,12 @@ import {
   cambiarConservar,
   cambiarNavegacion,
   cambiarPestana,
+  cambiarRestaurando,
   cambiarSeleccion,
   cambiarVerTodo,
-  leerAhora,
   leerArbol,
   leerBorrando,
+  leerRestaurando,
   leerHead,
   leerOcupado,
   leerSeleccion,
@@ -84,7 +99,7 @@ import {
   leerTotal,
 } from './estado'
 import { anillo, anilloSvg, columnas, columnasSvg } from './graficos'
-import { selectorEnPanel } from './selector'
+import { modeloDe, selectorEnPanel } from './selector'
 
 type Elemento = (props: Record<string, unknown>) => unknown
 // Lo que el panel necesita del evento `ui.render` del Pane.
@@ -105,8 +120,6 @@ const PESTANAS: [Pestana, string][] = [
 // mínimo la leyenda para ir a su lado.
 const DIAMETRO_MAXIMO = 26
 const LEYENDA_MINIMA = 28
-// Fondo liso de las barras: el gris de los bordes del tema, claro u oscuro.
-const CARRIL = 'subtle'
 
 export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Config): Promise<unknown> {
   const tabla = $.ui.resolve(e as never) as unknown as {
@@ -128,7 +141,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const activa = await leerPestana($)
   const arbol = await leerArbol($)
   const confirmando = await leerConfirmar($)
-  const ahora = await leerAhora($)
+  const ahora = await horaVisible($)
 
   const ancho = Math.max(24, e.props.bodyColumns)
   const interior = ancho - 4
@@ -142,8 +155,20 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const ritmo = tendencia(turnos, f, t)
   const compactaPct = f?.compacta == null || ventana === undefined ? null : Math.round((f.compacta / ventana) * 100)
 
+  // ── Estados de los controles (ver «Estilo de los controles» en calculo) ────
+  // Un botón, una fila o un enlace: fondo suave al pasar, sin invertirse.
+  const pasar = (id: string) => ({ ...sinInvertir(`panel-${id}`), backgroundColor: FONDO_ENCIMA })
+  // La acción principal: en su color en reposo y rellena de él al pasar.
+  const principal = (id: string, fondo = 'suggestion') => ({
+    ...sinInvertir(`panel-${id}`),
+    backgroundColor: fondo,
+    color: 'inverseText',
+  })
+  // Un texto atenuado dentro de un control: a plena intensidad al pasar.
+  const avivar = (id: string, color = 'text') => encima(`panel-${id}`, { dimColor: false, color })
+
   // ── Piezas comunes ─────────────────────────────────────────────────────────
-  const tarjeta = (titulo: string, hijos: unknown, borde = 'subtle') => (
+  const tarjeta =(titulo: string, hijos: unknown, borde = 'subtle') => (
     <Box flexDirection="column" borderStyle="round" borderColor={borde} paddingX={1}>
       <Text color={borde} weight="bold">
         {titulo}
@@ -163,15 +188,15 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         <Text color="warning" weight="bold">
           ¿Compactar ahora?
         </Text>
-        <Button key="compactar-si" variant="primary" onPress={() => void compactar($)}>
+        <Button key="compactar-si" variant="primary" hover={principal('compactar-si')} onPress={() => void compactar($)}>
           Sí, compactar
         </Button>
-        <Button key="compactar-no" onPress={() => void cambiarConfirmar($, () => false)}>
+        <Button key="compactar-no" hover={pasar('compactar-no')} onPress={() => void cambiarConfirmar($, () => false)}>
           Cancelar
         </Button>
       </Box>
     ) : (
-      <Button key="compactar" onPress={() => void cambiarConfirmar($, () => true)}>
+      <Button key="compactar" hover={pasar('compactar')} onPress={() => void cambiarConfirmar($, () => true)}>
         ⇣ Compactar ahora
       </Button>
     )
@@ -259,7 +284,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   )
 
   // ── Límites de uso: barra, % usado, marca del ritmo y cuenta atrás ─────────
-  const vs = ventanas(t?.limites ?? [], ahora)
+  const vs = ventanas(await limitesVisibles($), ahora)
   const anchoTipo = Math.max(0, ...vs.map(v => v.tipo.length)) + 2
   const reinicios = vs.map(v => (v.falta === null ? '' : `  ↻ ${duracionCorta(v.falta)}`))
   const anchoReinicio = Math.max(0, ...reinicios.map(r => r.length))
@@ -322,14 +347,21 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
     subagentes: activos > 0 ? ` ${activos}` : '',
     arbol: arbol === null || arbol.nodos.length === 0 ? '' : ` ${arbol.nodos.length}`,
   }
+  // La activa, una píldora rellena del color de Claude; las demás, atenuadas y
+  // con fondo suave al pasar. Pasar por la activa no la cambia.
   const barraPestanas = (
     <Box flexDirection="row" flexWrap="wrap" columnGap={1} marginTop={1}>
       {PESTANAS.map(([id, nombre]) => (
-        <Button key={`pestana-${id}`} plain onPress={() => void cambiarPestana($, () => id)}>
+        <Button key={`pestana-${id}`} plain hover={sinInvertir(`panel-pestana-${id}`)} onPress={() => void cambiarPestana($, () => id)}>
           {id === activa ? (
-            <Text inverse weight="bold">{` ${nombre}${contador[id] ?? ''} `}</Text>
+            <Text backgroundColor="claude" color="inverseText" weight="bold">{` ${nombre}${contador[id] ?? ''} `}</Text>
           ) : (
-            <Text dimColor>{` ${nombre}${contador[id] ?? ''} `}</Text>
+            <Text
+              dimColor
+              hover={encima(`panel-pestana-${id}`, { dimColor: false, color: 'text', backgroundColor: FONDO_ENCIMA })}
+            >
+              {` ${nombre}${contador[id] ?? ''} `}
+            </Text>
           )}
         </Button>
       ))}
@@ -356,7 +388,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
       }
       return [
         ...separador,
-        <Button key={`miga-${i}`} plain onPress={ir(nav.slice(0, i))}>
+        <Button key={`miga-${i}`} plain hover={pasar(`miga-${i}`)} onPress={ir(nav.slice(0, i))}>
           <Text color="suggestion" underline>
             {tramo.slice(0, 20)}
           </Text>
@@ -385,7 +417,12 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
       if (q.entrar !== undefined) {
         const destino = [...nav, q.entrar]
         return (
-          <Button key={`entrar-${destino.join('/')}`} plain onPress={entrarEn(destino)}>
+          <Button
+            key={`entrar-${destino.join('/')}`}
+            plain
+            hover={pasar(`entrar-${destino.join('/')}`)}
+            onPress={entrarEn(destino)}
+          >
             {contenido}
           </Button>
         )
@@ -393,7 +430,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
       if (q.ruta !== undefined) {
         const ruta = q.ruta
         return (
-          <Button key={`abrir-${ruta}`} plain onPress={() => void abrir($, ruta)}>
+          <Button key={`abrir-${ruta}`} plain hover={pasar(`abrir-${ruta}`)} onPress={() => void abrir($, ruta)}>
             {contenido}
           </Button>
         )
@@ -425,11 +462,11 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
           <Box flexDirection="row">{migas}</Box>
           <Box flexDirection="row" columnGap={1}>
             {nav.length === 0 ? null : (
-              <Button key="atras" onPress={ir(nav.slice(0, -1))}>
+              <Button key="atras" hover={pasar('atras')} onPress={ir(nav.slice(0, -1))}>
                 ← Atrás
               </Button>
             )}
-            <Button key="exacto" onPress={() => void fotografiar($, 'full')}>
+            <Button key="exacto" hover={pasar('exacto')} onPress={() => void fotografiar($, 'full')}>
               ⟳ exacto
             </Button>
           </Box>
@@ -447,10 +484,13 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
     )
   }
 
-  // ▲ Diagnóstico: cada mal uso con su consejo, abrir e ignorar.
+  // ▲ Diagnóstico: cada mal uso con su consejo, sus pruebas, abrir, resolver
+  // con IA (una sesión aparte en Sonnet) e ignorar.
   const hallazgoFila = (x: Hallazgo) => {
     const ancho = Math.max(6, interior - 9)
     const ruta = x.ruta
+    // Las pruebas que caben en una línea; el informe lleva todas.
+    const pruebas = x.pruebas.filter(p => !p.startsWith('Fichero: ')).slice(0, 2)
     return (
       <Box flexDirection="column" marginBottom={1}>
         <Text wrap="truncate">
@@ -459,14 +499,27 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
           <Text weight="bold">{`≈${k(x.tokens)}`.padStart(7)}</Text>
         </Text>
         <Text dimColor wrap="wrap">{`  ↳ ${x.consejo}`}</Text>
+        {pruebas.map(p => (
+          <Text dimColor wrap="truncate">{`    · ${enLinea(p)}`}</Text>
+        ))}
         <Box flexDirection="row" columnGap={2} paddingLeft={4}>
           {ruta === undefined ? null : (
-            <Button key={`diag-abrir-${x.clave}`} plain onPress={() => void abrir($, ruta)}>
-              <Text color="suggestion">↗ abrir</Text>
+            <Button key={`diag-abrir-${x.clave}`} plain hover={pasar(`diag-abrir-${x.clave}`)} onPress={() => void abrir($, ruta)}>
+              <Text color="suggestion">{' ↗ abrir '}</Text>
             </Button>
           )}
-          <Button key={`diag-ignorar-${x.clave}`} plain onPress={() => void ignorar($, x.clave)}>
-            <Text dimColor>✕ ignorar</Text>
+          <Button
+            key={`diag-ia-${x.clave}`}
+            plain
+            hover={pasar(`diag-ia-${x.clave}`)}
+            onPress={press => resolverConIA($, x, press.surface)}
+          >
+            <Text color="claude">{' ✦ resolver con IA '}</Text>
+          </Button>
+          <Button key={`diag-ignorar-${x.clave}`} plain hover={pasar(`diag-ignorar-${x.clave}`)} onPress={() => void ignorar($, x.clave)}>
+            <Text dimColor hover={avivar(`diag-ignorar-${x.clave}`, 'error')}>
+              {' ✕ ignorar '}
+            </Text>
           </Button>
         </Box>
       </Box>
@@ -481,7 +534,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         omitidos.length === 0 ? null : (
           <Box flexDirection="row" columnGap={2}>
             <Text dimColor>{`${omitidos.length} ignorado${omitidos.length === 1 ? '' : 's'}`}</Text>
-            <Button key="restaurar" plain onPress={() => void restaurarIgnorados($)}>
+            <Button key="restaurar" plain hover={pasar('restaurar')} onPress={() => void restaurarIgnorados($)}>
               <Text color="suggestion" underline>
                 restaurar
               </Text>
@@ -657,6 +710,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
     const todo = await leerVerTodo($)
     const ocupado = await leerOcupado($)
     const borrando = await leerBorrando($)
+    const restaurando = await leerRestaurando($)
     const consulta = await leerConsulta($)
     const Input = tabla.Input
     // Recién empezada la sesión (también tras restaurar) el índice aún no ha
@@ -669,41 +723,66 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         <Text dimColor wrap="wrap">
           Aún no hay checkpoints. Se guarda uno al cerrar cada turno; con /cp nombre le pones nombre al punto actual.
         </Text>,
-        <Button key="arbol-guardar" onPress={() => checkpoint($)}>
+        <Button key="arbol-guardar" hover={pasar('arbol-guardar')} onPress={() => checkpoint($)}>
           ◆ Guardar aquí
         </Button>,
       ])
     }
+    // La marca de rewind es de la conversación que lo hizo: en el camino de la
+    // actual (y en el HEAD) no se muestra.
+    const caminoActual = new Set(head === null ? [] : ancestros(arbol, head).map(n => n.id))
+    const esAbandonado = (n: { id: string; abandonado?: true }) => n.abandonado === true && !caminoActual.has(n.id)
     const filaNodo = (guia: string, plegados: number, id: string) => {
       const n = buscarNodo(arbol, id)
       if (n === undefined) return null
       const esHead = n.id === head
       const esElegido = n.id === elegido?.id
-      const marca = esHead ? '◉ ' : n.nombre !== undefined ? '◆ ' : n.padre === null ? '● ' : '○ '
+      // La fila: marca, un hueco, la etiqueta (con un espacio a cada lado dentro
+      // de su píldora o de su fondo al pasar), relleno liso hasta la columna de
+      // las cifras y, tras otro hueco, el turno y los tokens alineados a la
+      // derecha. Así el fondo nunca toca la marca ni las cifras.
+      // Lo que un rewind dejó fuera de su conversación se ve apagado y con ◌.
+      const fuera = esAbandonado(n)
+      const marca = esHead ? '◉' : n.nombre !== undefined ? '◆' : fuera ? '◌' : n.padre === null ? '●' : '○'
       const pliegue = plegados > 0 ? `┄${plegados}┄ ` : ''
-      const cifra = ` t${n.turnos} ${k(n.tokens).padStart(5)}`
-      const sitio = Math.max(6, interior - guia.length - pliegue.length - marca.length - cifra.length - (esHead ? 7 : 0))
+      const cifra = `${`t${n.turnos}`.padStart(4)} ${k(n.tokens).padStart(5)}`
+      const aqui = esHead ? ' ← aquí' : ''
+      // marca + hueco + 2 espacios de la píldora + hueco antes de la cifra.
+      const sitio = Math.max(6, interior - guia.length - pliegue.length - marca.length - 4 - cifra.length - aqui.length)
       const texto = etiquetaNodo(n).slice(0, sitio)
-      const destacado = n.nombre !== undefined || esHead
+      const relleno = ' '.repeat(Math.max(0, sitio - texto.length))
+      const destacado = (n.nombre !== undefined && !fuera) || esHead
       return (
-        <Button key={`nodo-${n.id}`} plain onPress={() => void cambiarSeleccion($, () => n.id)}>
+        <Button key={`nodo-${n.id}`} plain hover={sinInvertir(`panel-nodo-${n.id}`)} onPress={() => void cambiarSeleccion($, () => n.id)}>
           <Text wrap="truncate">
             <Text dimColor>{guia}</Text>
             <Text dimColor>{pliegue}</Text>
-            <Text color={esHead ? 'claude' : n.nombre !== undefined ? 'suggestion' : 'inactive'} weight="bold">
+            <Text color={esHead ? 'claude' : n.nombre !== undefined && !fuera ? 'suggestion' : 'inactive'} weight="bold">
               {marca}
             </Text>
+            <Text>{' '}</Text>
+            {/* El elegido, una píldora del color de selección; los demás se
+                iluminan con fondo suave al pasar. */}
             {esElegido ? (
-              <Text inverse weight="bold">
-                {texto}
+              <Text backgroundColor="suggestion" color="inverseText" weight="bold">
+                {` ${texto} `}
               </Text>
             ) : destacado ? (
-              <Text weight="bold">{texto}</Text>
+              <Text weight="bold" hover={encima(`panel-nodo-${n.id}`, { backgroundColor: FONDO_ENCIMA })}>
+                {` ${texto} `}
+              </Text>
             ) : (
-              <Text dimColor>{texto}</Text>
+              <Text
+                dimColor
+                italic={fuera}
+                hover={encima(`panel-nodo-${n.id}`, { dimColor: false, color: 'text', backgroundColor: FONDO_ENCIMA })}
+              >
+                {` ${texto} `}
+              </Text>
             )}
+            <Text>{`${relleno} `}</Text>
             <Text dimColor>{cifra}</Text>
-            {esHead ? <Text color="claude">{' ← aquí'}</Text> : null}
+            {esHead ? <Text color="claude">{aqui}</Text> : null}
           </Text>
         </Button>
       )
@@ -726,13 +805,36 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
         relacion = `se separa en ${etiquetaNodo(comun).slice(0, 24)} · +${n.turnos - comun.turnos} aquí / +${actual.turnos - comun.turnos} en la actual`
       }
       const ramas = hijos(arbol, n.id).length
+      // Lo que se lleva «Borrar rama»: el nodo, lo que cuelga de él y, quizá,
+      // el checkpoint de la conversación actual.
+      const rama = descendientes(arbol, n.id)
+      const caen = rama.size
+      const conLaActual = head !== null && rama.has(head)
       const nivel = ancestros(arbol, n.id).length
+      const fuera = esAbandonado(n)
       detalle = tarjeta(
-        `${n.id === head ? '◉' : n.nombre !== undefined ? '◆' : '○'} ${etiquetaNodo(n)}`.slice(0, interior),
+        `${n.id === head ? '◉' : n.nombre !== undefined ? '◆' : fuera ? '◌' : '○'} ${etiquetaNodo(n)}`.slice(0, interior),
         [
           dato('Checkpoint', <Text>{`${n.id} · ${cuando} · nivel ${nivel}${ramas > 1 ? ` · ${ramas} ramas` : ''}`}</Text>),
           dato('Conversación', <Text weight="bold">{`${nTurnos(n.turnos)} · ${n.mensajes} mensajes · ≈${k(n.tokens)}`}</Text>),
           dato('Relación', <Text>{relacion}</Text>),
+          n.modelo === undefined && n.esfuerzo === undefined
+            ? null
+            : dato(
+                'Modo',
+                <Text>
+                  {[n.modelo === undefined ? null : (modeloDe(n.modelo)?.nombre ?? n.modelo), n.esfuerzo ?? null]
+                    .filter(x => x !== null)
+                    .join(' · ')}
+                </Text>,
+              ),
+          // Restaurar trae la conversación, no los ficheros: tras un rewind que
+          // también restauró el código, lo que se hizo aquí ya no está en disco.
+          fuera ? (
+            <Text color="warning" wrap="wrap">
+              ⤺ Un rewind lo dejó fuera de la conversación: si también restauró el código, los cambios de aquí ya no están en los ficheros.
+            </Text>
+          ) : null,
           n.prompt === '' || n.nombre === undefined ? null : dato('Último prompt', <Text dimColor>{`«${enLinea(n.prompt)}»`}</Text>),
           Input === undefined ? null : (
             <Input
@@ -758,37 +860,64 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
           borrando === n.id ? (
             <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
               <Text color="error" weight="bold">
-                ¿Borrar este checkpoint y todo lo que cuelga de él?
+                {caen === 1 ? '¿Borrar este checkpoint?' : `¿Borrar este checkpoint y los ${caen - 1} que cuelgan de él?`}
               </Text>
-              <Button key="borrar-si" variant="primary" onPress={() => borrarRama($, n.id)}>
+              {conLaActual ? (
+                <Text color="warning">Incluye la conversación actual: sigue, pero sin checkpoint hasta el próximo turno.</Text>
+              ) : null}
+              <Button key="borrar-si" variant="primary" hover={principal('borrar-si', 'error')} onPress={() => borrarRama($, n.id)}>
                 Sí, borrar
               </Button>
-              <Button key="borrar-no" onPress={() => void cambiarBorrando($, () => null)}>
+              <Button key="borrar-no" hover={pasar('borrar-no')} onPress={() => void cambiarBorrando($, () => null)}>
                 Cancelar
               </Button>
+            </Box>
+          ) : restaurando === n.id && ocupado === null ? (
+            // Restaurar un punto que un rewind dejó atrás trae su conversación,
+            // no su código: se confirma, y Claude recibe una nota para releer.
+            <Box flexDirection="column">
+              <Text color="warning" weight="bold" wrap="wrap">
+                ¿Restaurar un punto que un rewind dejó atrás?
+              </Text>
+              <Text dimColor wrap="wrap">
+                Vuelve la conversación, no los ficheros: si el rewind restauró el código, lo que se hizo aquí ya no está en disco. Claude recibirá una nota para releer los ficheros antes de editar.
+              </Text>
+              <Box flexDirection="row" columnGap={1}>
+                <Button key="ir-si" variant="primary" hover={principal('ir-si', 'warning')} onPress={() => restaurar($, n.id)}>
+                  Sí, restaurar
+                </Button>
+                <Button key="ir-no" hover={pasar('ir-no')} onPress={() => void cambiarRestaurando($, () => null)}>
+                  Cancelar
+                </Button>
+              </Box>
             </Box>
           ) : (
             <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
               {n.id === head || ocupado !== null ? null : (
-                <Button key="ir" variant="primary" onPress={() => restaurar($, n.id)}>
+                <Button
+                  key="ir"
+                  variant="primary"
+                  hover={principal('ir')}
+                  onPress={() => (fuera ? cambiarRestaurando($, () => n.id) : restaurar($, n.id))}
+                >
                   ⤺ Restaurar aquí
                 </Button>
               )}
               {enLaActual || head === null ? null : (
-                <Button key="injertar" onPress={() => injertar($, n.id)}>
+                <Button key="injertar" hover={pasar('injertar')} onPress={() => injertar($, n.id)}>
                   ⎇ Injertar en la actual
                 </Button>
               )}
               {n.id === head || head === null ? null : (
-                <Button key="comparar" onPress={() => consultarComparacion($, n.id, head)}>
+                <Button key="comparar" hover={pasar('comparar')} onPress={() => consultarComparacion($, n.id, head)}>
                   ⇄ Comparar con la actual
                 </Button>
               )}
-              <Button key="exportar" onPress={() => exportarConAviso($, n.id)}>
+              <Button key="exportar" hover={pasar('exportar')} onPress={() => exportarConAviso($, n.id)}>
                 ⇩ Exportar
               </Button>
-              {n.id === head || enLaActual ? null : (
-                <Button key="borrar" onPress={() => void cambiarBorrando($, () => n.id)}>
+              {ocupado !== null ? null : (
+                <Button key="borrar" hover={pasar('borrar')} onPress={() => void cambiarBorrando($, () => n.id)}>
                   ✕ Borrar rama
                 </Button>
               )}
@@ -806,16 +935,47 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
       return n === undefined ? id : `${id} ${etiquetaNodo(n)}`
     }
     const cerrar = (
-      <Button key="consulta-cerrar" onPress={() => void cambiarConsulta($, () => null)}>
+      <Button key="consulta-cerrar" hover={pasar('consulta-cerrar')} onPress={() => void cambiarConsulta($, () => null)}>
         ✕ Cerrar
       </Button>
     )
+    // El aviso de un rewind de esta sesión: lo que dejó fuera se ha marcado, y
+    // la persona decide si se borra (el motor no dice si restauró el código).
+    let avisoRewind: unknown = null
+    const rewind = rewindDe(arbol, await $.session.id())
+    if (rewind !== undefined) {
+      const caen = borrables(arbol, rewind.ids).size
+      const quedan = rewind.ids.length - caen
+      const cuantos = rewind.ids.length === 1 ? '1 checkpoint quedó' : `${rewind.ids.length} checkpoints quedaron`
+      avisoRewind = (
+        <Box flexDirection="column">
+          <Text color="warning" weight="bold" wrap="wrap">{`⤺ Rewind: ${cuantos} fuera de la conversación (◌)`}</Text>
+          <Text dimColor wrap="wrap">
+            {`Si también restauraste el código, sus cambios ya no están en los ficheros.${
+              quedan > 0 ? ` ${quedan === 1 ? 'Se queda 1' : `Se quedan ${quedan}`} con nombre, con ramas o abiertos en otra sesión.` : ''
+            }`}
+          </Text>
+          <Box flexDirection="row" columnGap={1}>
+            {caen === 0 || ocupado !== null ? null : (
+              <Button key="rewind-borrar" variant="primary" hover={principal('rewind-borrar', 'error')} onPress={() => borrarAbandonados($)}>
+                {`✕ Borrar ${caen === 1 ? '1 checkpoint' : `${caen} checkpoints`}`}
+              </Button>
+            )}
+            <Button key="rewind-conservar" hover={pasar('rewind-conservar')} onPress={() => conservarAbandonados($)}>
+              Conservar
+            </Button>
+          </Box>
+        </Box>
+      )
+    }
+    const hayAbandonados = arbol.nodos.some(esAbandonado)
+
     let abierta: unknown = null
     if (consulta?.tipo === 'buscar') {
       abierta = tarjeta(`⌕ «${enLinea(consulta.texto)}» · ${consulta.total} ${consulta.total === 1 ? 'acierto' : 'aciertos'}`.slice(0, interior), [
         consulta.total === 0 ? <Text dimColor>Nada con ese texto en los checkpoints.</Text> : null,
         ...consulta.resultados.map((acierto, i) => (
-          <Button key={`hallado-${i}`} plain onPress={() => void cambiarSeleccion($, () => acierto.id)}>
+          <Button key={`hallado-${i}`} plain hover={pasar(`hallado-${i}`)} onPress={() => void cambiarSeleccion($, () => acierto.id)}>
             <Text wrap="truncate">
               <Text color="suggestion" weight="bold">{`${acierto.id.padEnd(5)}`}</Text>
               <Text dimColor>{`${acierto.quien}: `}</Text>
@@ -854,17 +1014,54 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
 
     return [
       tarjeta(`Árbol · ${arbol.nodos.length} checkpoints`, [
-        <Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-          <Button key="arbol-guardar" onPress={() => checkpoint($)}>
-            ◆ Guardar aquí
-          </Button>
-          <Button key="arbol-todo" onPress={() => void cambiarVerTodo($, v => !v)}>
-            {todo ? '⇡ Plegar cadenas' : '⇣ Ver cada turno'}
-          </Button>
+        <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" columnGap={1}>
+          <Box flexDirection="row" columnGap={1}>
+            <Button key="arbol-guardar" hover={pasar('arbol-guardar')} onPress={() => checkpoint($)}>
+              ◆ Guardar aquí
+            </Button>
+            <Button key="arbol-todo" hover={pasar('arbol-todo')} onPress={() => void cambiarVerTodo($, v => !v)}>
+              {todo ? '⇡ Plegar cadenas' : '⇣ Ver cada turno'}
+            </Button>
+          </Box>
+          {ocupado !== null || borrando === TODO_EL_ARBOL ? null : (
+            <Button key="arbol-limpiar" hover={principal('arbol-limpiar', 'error')} onPress={() => void cambiarBorrando($, () => TODO_EL_ARBOL)}>
+              ✕ Limpiar árbol
+            </Button>
+          )}
         </Box>,
+        borrando === TODO_EL_ARBOL ? (
+          <Box flexDirection="column">
+            <Text color="error" weight="bold" wrap="wrap">
+              {`¿Borrar los ${arbol.nodos.length} checkpoints del árbol?`}
+            </Text>
+            <Text dimColor wrap="wrap">
+              Las conversaciones no se borran: siguen en /resume. El próximo turno empieza un árbol nuevo.
+            </Text>
+            <Box flexDirection="row" columnGap={1}>
+              <Button key="arbol-limpiar-si" variant="primary" hover={principal('arbol-limpiar-si', 'error')} onPress={() => limpiarArbol($)}>
+                Sí, limpiar
+              </Button>
+              <Button key="arbol-limpiar-no" hover={pasar('arbol-limpiar-no')} onPress={() => void cambiarBorrando($, () => null)}>
+                Cancelar
+              </Button>
+            </Box>
+          </Box>
+        ) : null,
+        avisoRewind,
         ...filasArbol(arbol, head, elegido?.id ?? null, todo).map(f => filaNodo(f.guia, f.plegados, f.nodo.id)),
+        // La leyenda va tras una raya y con las marcas en los colores del
+        // árbol, para que no se lea como una fila más.
         <Text dimColor wrap="truncate">
-          {'◉ aquí  ◆ con nombre  ○ turno  ┄n┄ plegados'}
+          {'─'.repeat(Math.max(0, interior))}
+        </Text>,
+        <Text wrap="truncate">
+          <Text color="claude" weight="bold">◉</Text>
+          <Text dimColor>{' aquí · '}</Text>
+          <Text color="suggestion" weight="bold">◆</Text>
+          <Text dimColor>{' con nombre · '}</Text>
+          <Text color="inactive" weight="bold">○</Text>
+          <Text dimColor>{' turno · ┄n┄ plegados'}</Text>
+          {hayAbandonados ? <Text dimColor>{' · ◌ rewind'}</Text> : null}
         </Text>,
         Input === undefined ? null : (
           <Input

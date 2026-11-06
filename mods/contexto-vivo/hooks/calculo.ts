@@ -1,4 +1,4 @@
-import type { Entrada, Fila, Foto, Hallazgo, Limite, Llamada, Quesito, Subagente, Total, Turno } from '../types'
+import type { Entrada, Fila, Foto, Hallazgo, Limite, Llamada, Quesito, Subagente, TipoHallazgo, Total, Turno } from '../types'
 import type { Config } from './config'
 
 // Caracteres por token al estimar un resultado (texto en español y código).
@@ -50,6 +50,62 @@ export function k(n: number): string {
 
 export function css(rgb: number): string {
   return `#${rgb.toString(16).padStart(6, '0')}`
+}
+
+// ── Estilo de los controles ──────────────────────────────────────────────────
+// Tres estados para todo lo pulsable del mod:
+//   · en reposo: el texto en su color, o atenuado si es secundario;
+//   · encima (puntero): un fondo suave del tema y el texto a plena intensidad;
+//   · elegido: una píldora rellena del color de acento, con la tinta que mejor
+//     se lee encima y en negrita.
+// El terminal invierte el botón bajo el puntero, que convierte una píldora
+// elegida en otra apagada. Cada botón nombra su propio grupo de hover, y con
+// `inverse: false` en ese grupo el estilo lo pone el mod en lugar del motor.
+// El foco del teclado (Tab con la banda o el panel enfocados) sigue invirtiendo.
+
+// Fondo del hover: el gris de los bordes del tema, claro u oscuro.
+export const FONDO_ENCIMA = 'subtle'
+// Fondo liso de las barras: el mismo gris, como carril por llenar.
+export const CARRIL = 'subtle'
+
+// Mezcla dos colores 0xRRGGBB: t = 0 da `a`, t = 1 da `b`.
+export function mezcla(a: number, b: number, t: number): number {
+  const canal = (desplazamiento: number) => {
+    const x = (a >> desplazamiento) & 0xff
+    const y = (b >> desplazamiento) & 0xff
+    return Math.round(x + (y - x) * Math.max(0, Math.min(1, t))) << desplazamiento
+  }
+  return canal(16) | canal(8) | canal(0)
+}
+
+// Negro o blanco, lo que más contraste tenga sobre un fondo 0xRRGGBB.
+export function tinta(fondo: number): string {
+  const lineal = (c: number) => {
+    const v = c / 255
+    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4
+  }
+  const l = 0.2126 * lineal((fondo >> 16) & 0xff) + 0.7152 * lineal((fondo >> 8) & 0xff) + 0.0722 * lineal(fondo & 0xff)
+  return (l + 0.05) / 0.05 >= 1.05 / (l + 0.05) ? '#000000' : '#ffffff'
+}
+
+// El grupo de hover de un control: hasta 64 caracteres y único en el mod (los
+// largos, como una ruta, se acortan con un resumen para no chocar).
+export function grupo(id: string): string {
+  const completo = `cv:${id}`
+  if (completo.length <= 64) return completo
+  let h = 0
+  for (let i = 0; i < completo.length; i++) h = (Math.imul(h, 31) + completo.charCodeAt(i)) | 0
+  return `${completo.slice(0, 54)}~${(h >>> 0).toString(36)}`
+}
+
+// Lo que va en el `hover` del propio Button: su grupo y sin la inversión.
+export function sinInvertir(id: string): { scope: string; inverse: false } {
+  return { scope: grupo(id), inverse: false }
+}
+
+// Lo que va en el `hover` de un Text dentro del Button: su grupo y el estilo.
+export function encima<T extends Record<string, unknown>>(id: string, estilo: T): T & { scope: string } {
+  return { scope: grupo(id), ...estilo }
 }
 
 export function ordenar<T extends { tokens: number }>(filas: T[], cuantas: number): T[] {
@@ -148,6 +204,9 @@ export type Ventana = {
 
 export function ventanas(limites: Limite[], ahora: number): Ventana[] {
   return limites.map(l => {
+    // Una lectura cuyo reinicio ya pasó (guardada de otra sesión, o sin
+    // respuestas desde entonces): la ventana ha vuelto a empezar.
+    if (l.reinicio !== undefined && l.reinicio <= ahora) return { tipo: l.tipo, usado: 0, ritmo: null, falta: null, agota: null }
     const usado = Math.min(100, Math.max(0, 100 - l.libre))
     const falta = l.reinicio === undefined ? null : Math.max(0, l.reinicio - ahora)
     const duracion = DURACION[l.tipo]
@@ -306,8 +365,16 @@ export function entradas(nav: string[], f: Foto | null, lista: Llamada[], largos
   return conTonos([...grupos.values()], g => ({ ruta: g.ruta, nota: g.veces > 1 ? `×${g.veces}` : undefined }))
 }
 
+// Lo que se sabe de una llamada, para las pruebas de un hallazgo.
+function pruebasDe(l: Llamada): string[] {
+  const p = [`Llamada #${l.orden} a ${l.herramienta}: ≈${k(l.tokens)} tokens de resultado en la conversación`]
+  if (l.entrada !== undefined) p.push(`Argumentos: ${l.entrada}`)
+  return p
+}
+
 // Malos usos del contexto: relecturas, lecturas enteras grandes, salidas y
-// respuestas desmesuradas, y memoria o MCP que se pagan en cada turno.
+// respuestas desmesuradas, y memoria o MCP que se pagan en cada turno. Cada
+// hallazgo lleva sus pruebas, con las que `informeIA` arma el encargo.
 // Los hallazgos cuya clave está en `ignorados` no se devuelven.
 export function diagnosticar(f: Foto | null, lista: Llamada[], cfg: Config, ignorados: string[]): Hallazgo[] {
   const hallazgos: Hallazgo[] = []
@@ -321,60 +388,72 @@ export function diagnosticar(f: Foto | null, lista: Llamada[], cfg: Config, igno
   for (const [ruta, veces] of lecturas) {
     if (veces.length < 2) continue
     repetidas.add(ruta)
-    const sobra = veces.reduce((s, l) => s + l.tokens, 0) - Math.max(...veces.map(l => l.tokens))
+    const suma = veces.reduce((s, l) => s + l.tokens, 0)
+    const sobra = suma - Math.max(...veces.map(l => l.tokens))
     hallazgos.push({
       clave: `relectura:${ruta}`,
+      tipo: 'relectura',
       gravedad: veces.length >= 3 ? 'alta' : 'media',
       texto: `${corta(ruta)} leído ${veces.length} veces`,
       consejo: 'reutiliza lo ya leído o lee solo la parte que cambió',
       tokens: sobra,
       ruta,
+      herramienta: 'Read',
+      pruebas: [
+        `Fichero: ${ruta}`,
+        `${veces.length} lecturas que suman ≈${k(suma)} tokens; ≈${k(sobra)} repiten lo ya leído`,
+        ...veces.map(
+          l => `Lectura #${l.orden}: ${l.parcial === true ? `parcial ${l.entrada ?? ''}`.trim() : 'entera'} · ≈${k(l.tokens)}`,
+        ),
+      ],
     })
   }
   for (const l of lista) {
     const fa = familia(l.herramienta).nombre
     const gravedad = l.tokens >= cfg.golpe ? 'alta' : 'media'
+    const comun = { gravedad, tokens: l.tokens, herramienta: l.herramienta, pruebas: pruebasDe(l), muestra: l.muestra } as const
     if (l.herramienta === 'Read') {
       if (l.parcial === true || (l.ruta !== undefined && repetidas.has(l.ruta)) || l.tokens < cfg.lectura) continue
       hallazgos.push({
+        ...comun,
         clave: `lectura:${l.id}`,
-        gravedad,
+        tipo: 'lectura',
         texto: `${l.etiqueta} leído entero`,
         consejo: l.ruta?.endsWith('.md') === true ? 'lee por secciones (offset/limit) o busca con Grep' : 'usa offset/limit o Grep',
-        tokens: l.tokens,
         ruta: l.ruta,
+        pruebas: [...(l.ruta === undefined ? [] : [`Fichero: ${l.ruta}`]), ...comun.pruebas, 'Leído sin offset ni limit'],
       })
     } else if (fa === 'Bash' && l.tokens >= cfg.bash) {
       hallazgos.push({
+        ...comun,
         clave: `bash:${l.id}`,
-        gravedad,
+        tipo: 'bash',
         texto: `Salida de ${l.herramienta}: ${l.etiqueta}`,
         consejo: 'filtra la salida (head, grep, --query)',
-        tokens: l.tokens,
       })
     } else if (fa === 'Respuestas MCP' && l.tokens >= cfg.mcp) {
       hallazgos.push({
+        ...comun,
         clave: `mcp:${l.id}`,
-        gravedad,
+        tipo: 'mcp',
         texto: `Respuesta de ${nombreHerramienta(l.herramienta)}`,
         consejo: 'pide menos resultados o solo los campos necesarios',
-        tokens: l.tokens,
       })
     } else if (fa === 'Subagentes' && l.tokens >= cfg.subagente) {
       hallazgos.push({
+        ...comun,
         clave: `subagente:${l.id}`,
-        gravedad,
+        tipo: 'subagente',
         texto: `Informe del subagente «${l.etiqueta}»`,
         consejo: 'pídele solo la conclusión',
-        tokens: l.tokens,
       })
     } else if (fa !== 'Bash' && fa !== 'Respuestas MCP' && fa !== 'Subagentes' && l.tokens >= cfg.otra) {
       hallazgos.push({
+        ...comun,
         clave: `otra:${l.id}`,
-        gravedad,
+        tipo: 'otra',
         texto: `${nombreHerramienta(l.herramienta)} ${l.etiqueta}`.trim(),
         consejo: 'acota la búsqueda o la consulta',
-        tokens: l.tokens,
       })
     }
   }
@@ -383,27 +462,140 @@ export function diagnosticar(f: Foto | null, lista: Llamada[], cfg: Config, igno
       if (m.tokens < cfg.memoria) continue
       hallazgos.push({
         clave: `memoria:${m.ruta ?? m.nombre}`,
+        tipo: 'memoria',
         gravedad: m.tokens >= cfg.memoria * 2 ? 'alta' : 'media',
         texto: `${m.nombre} en memoria`,
         consejo: 'se carga en cada turno: recórtalo o pásalo a reglas por carpeta',
         tokens: m.tokens,
         ruta: m.ruta,
+        pruebas: [
+          `Fichero: ${m.ruta ?? m.nombre}`,
+          `≈${k(m.tokens)} tokens que viajan en cada petición (umbral del diagnóstico: ${k(cfg.memoria)})`,
+          `Toda la memoria cargada: ${f.memoria.map(x => `${x.nombre} ≈${k(x.tokens)}`).join(', ')}`,
+        ],
       })
     }
     const mcp = f.mcp.reduce((s, m) => s + m.tokens, 0)
     if (mcp >= cfg.mcpCargado) {
+      const pesadas = [...f.mcpHerramientas].sort((a, b) => b.tokens - a.tokens).slice(0, 8)
       hallazgos.push({
         clave: 'mcp-cargado',
+        tipo: 'mcp-cargado',
         gravedad: 'media',
         texto: 'Herramientas MCP cargadas',
         consejo: 'desconecta los servidores que no uses aquí',
         tokens: mcp,
+        pruebas: [
+          `≈${k(mcp)} tokens de esquemas MCP cargados en cada petición (umbral: ${k(cfg.mcpCargado)})`,
+          ...[...f.mcp]
+            .sort((a, b) => b.tokens - a.tokens)
+            .map(m => `Servidor ${m.nombre}: ≈${k(m.tokens)} (${f.mcpHerramientas.filter(x => x.grupo === m.nombre).length} herramientas)`),
+          ...(pesadas.length === 0 ? [] : [`Las más pesadas: ${pesadas.map(x => `${x.grupo}·${x.nombre} ≈${k(x.tokens)}`).join(', ')}`]),
+        ],
       })
     }
   }
   return hallazgos
     .filter(x => !ignorados.includes(x.clave))
     .sort((a, b) => (a.gravedad === b.gravedad ? b.tokens - a.tokens : a.gravedad === 'alta' ? -1 : 1))
+}
+
+// ── Resolver con IA ─────────────────────────────────────────────────────────
+//
+// Un hallazgo se lleva a una sesión aparte de Claude Code (Sonnet, esfuerzo
+// alto): el informe en Markdown con lo detectado y las pruebas, y un encargo
+// según el tipo. La sesión arranca en el proyecto y lee el informe.
+
+export const MODELO_IA = 'sonnet'
+export const ESFUERZO_IA = 'high'
+
+const ENCARGOS: Record<TipoHallazgo, string> = {
+  relectura:
+    'El mismo fichero se ha leído varias veces en la misma conversación. Averigua por qué hace falta releerlo (¿es muy largo?, ¿cambia a menudo?, ¿falta un índice?) y propón cómo evitarlo: dividirlo, añadirle un índice o resumen al principio, o una instrucción en CLAUDE.md para leerlo por secciones.',
+  lectura:
+    'Un fichero grande se ha leído entero de una vez. Revísalo y propón cómo hacer que se lea por partes: dividirlo, añadir un índice con las secciones y sus líneas, o una regla en CLAUDE.md para usar offset/limit o Grep con él.',
+  bash:
+    'Un comando ha volcado una salida enorme en la conversación. Propón la versión filtrada del mismo comando (flags de salida breve, head/tail, grep, --quiet, formatos compactos) y, si se usa a menudo, una regla en CLAUDE.md o un script del proyecto que lo deje en una salida corta.',
+  mcp:
+    'Una herramienta MCP ha devuelto una respuesta muy grande. Según sus argumentos y el comienzo de la respuesta, propón cómo pedir menos: paginación, límites, filtros o solo los campos necesarios. Si conviene, redacta una regla para CLAUDE.md con la forma correcta de llamarla.',
+  subagente:
+    'Un subagente ha devuelto un informe muy largo que entra entero en la conversación principal. Reescribe el encargo para que devuelva solo la conclusión (con un formato y una extensión máximos) y, si es un tipo de agente propio, propón el cambio en su definición.',
+  otra:
+    'Una herramienta ha devuelto un resultado muy grande. Propón cómo acotar la llamada (rutas, patrones, límites de resultados) y, si se repite, una regla en CLAUDE.md para hacerlo así siempre.',
+  memoria:
+    'Un fichero de memoria se carga entero en cada petición. Léelo y propón cómo recortarlo sin perder lo importante: qué sobra, qué se puede condensar y qué conviene mover a reglas por carpeta (.claude/rules), a skills o a documentación que se lea solo cuando haga falta.',
+  'mcp-cargado':
+    'Los esquemas de las herramientas MCP ocupan mucho en cada petición. Ayúdame a decidir qué servidores no hacen falta en este proyecto y cómo desactivarlos solo aquí (settings del proyecto, .mcp.json, permisos), sin perder los que sí uso.',
+}
+
+export type ContextoIA = {
+  fecha: string
+  proyecto: string
+  sesion: string
+  // Ocupación de la sesión cuando se detectó, si se conoce.
+  ventana?: number
+  porcentaje?: number
+}
+
+// El informe que lee la sesión aparte: qué pasa, pruebas, consejo y encargo.
+export function informeIA(h: Hallazgo, c: ContextoIA): string {
+  const peso =
+    c.ventana === undefined || c.ventana <= 0
+      ? `≈${k(h.tokens)} tokens`
+      : `≈${k(h.tokens)} tokens (${((h.tokens / c.ventana) * 100).toFixed(1)} % de una ventana de ${k(c.ventana)})`
+  const lineas = [
+    `# Problema de contexto: ${h.texto}`,
+    '',
+    `Detectado por el diagnóstico del mod contexto-vivo en otra sesión de Claude Code (${c.sesion}) el ${c.fecha}.`,
+    `Proyecto: ${c.proyecto}`,
+    ...(c.porcentaje === undefined ? [] : [`Ocupación de aquella sesión al detectarlo: ${c.porcentaje} %`]),
+    '',
+    '## Qué pasa',
+    '',
+    `- Gravedad: ${h.gravedad}`,
+    `- Tipo: ${h.tipo}`,
+    `- Coste: ${peso}`,
+    ...(h.ruta === undefined ? [] : [`- Fichero: ${h.ruta}`]),
+    ...(h.herramienta === undefined ? [] : [`- Herramienta: ${h.herramienta}`]),
+    '',
+    '## Pruebas',
+    '',
+    ...h.pruebas.map(p => `- ${p}`),
+  ]
+  if (h.muestra !== undefined && h.muestra.trim() !== '') {
+    lineas.push('', 'Comienzo del resultado:', '', '```', h.muestra.replace(/```/g, "'''"), '```')
+  }
+  lineas.push(
+    '',
+    '## Consejo del diagnóstico',
+    '',
+    h.consejo,
+    '',
+    '## Lo que te pido',
+    '',
+    ENCARGOS[h.tipo],
+    '',
+    'No continúes la tarea de aquella sesión: el objetivo es que este problema no vuelva a pasar. Mira los ficheros del proyecto que haga falta, explícame la causa en pocas líneas y, antes de cambiar ningún fichero, enséñame el cambio y espera a que lo apruebe.',
+  )
+  return lineas.join('\n')
+}
+
+// El primer mensaje de la sesión aparte. Sin comillas, `;`, `&`, `%` ni otros
+// caracteres que Windows Terminal o cmd interpretan.
+export function promptIA(ruta: string): string {
+  return `Lee el informe ${ruta} y ayúdame a resolver el problema de contexto que describe, siguiendo lo que pide.`
+}
+
+// Nombre de la sesión aparte (claude -n), sin caracteres conflictivos.
+export function tituloIA(h: Hallazgo): string {
+  return `Contexto · ${h.texto}`.replace(/["&|<>^%!;`]/g, '').replace(/\s+/g, ' ').slice(0, 60).trim()
+}
+
+// Nombre del fichero del informe: fecha y clave saneadas.
+export function ficheroIA(h: Hallazgo, fecha: string): string {
+  const sello = fecha.replace(/[^0-9]/g, '').slice(0, 14)
+  const clave = h.clave.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(-60)
+  return `${sello}-${clave}.md`
 }
 
 // Ritmo de crecimiento y turnos que quedan hasta compactar.
@@ -433,17 +625,20 @@ export function tendencia(turnos: Turno[], f: Foto | null, t: Total | null): Ten
 // La cola de la línea de «auto mode on»: contexto, turnos, uso de las ventanas
 // (con la cuenta atrás si falta menos de un día y ↗ si va por encima del
 // ritmo) y avisos.
-export function pie(t: Total | null, turnos: number | null, avisos: number, ahora: number): string {
+export function pie(t: Total | null, limites: Limite[], turnos: number | null, avisos: number, ahora: number): string {
   const alerta = avisos > 0 ? `  ·  ⚠ ${avisos}` : ''
-  if (t === null) return `  ○ ctx —${alerta}`
-  const restantes = turnos === null ? '' : `  ·  ~${turnos} turno${turnos === 1 ? '' : 's'}`
-  const uso = ventanas(t.limites, ahora)
+  // Los límites van aunque la conversación aún no tenga cifra (recién abierta,
+  // tras /clear): son de la cuenta, no de la conversación.
+  const uso = ventanas(limites, ahora)
     .map(v => {
       const reinicio = v.falta !== null && v.falta < DIA ? ` ↻ ${duracionCorta(v.falta)}` : ''
       return `${sector(v.usado)} ${v.tipo} ${v.usado}%${reinicio}${v.agota === null ? '' : ' ↗'}`
     })
     .join(' · ')
-  return `  ${sector(t.porcentaje)} ctx ${t.porcentaje}% ${segmentos(t.porcentaje)} ${k(t.tokens)}/${k(t.ventana)}${restantes}${uso === '' ? '' : `  ·  ${uso}`}${alerta}`
+  const conUso = uso === '' ? '' : `  ·  ${uso}`
+  if (t === null) return `  ○ ctx —${conUso}${alerta}`
+  const restantes = turnos === null ? '' : `  ·  ~${turnos} turno${turnos === 1 ? '' : 's'}`
+  return `  ${sector(t.porcentaje)} ctx ${t.porcentaje}% ${segmentos(t.porcentaje)} ${k(t.tokens)}/${k(t.ventana)}${restantes}${conUso}${alerta}`
 }
 
 // El texto de /contexto-top.

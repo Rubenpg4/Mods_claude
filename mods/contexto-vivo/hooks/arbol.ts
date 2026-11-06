@@ -1,7 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
-import type { Arbol, Hallado, Nodo, Paso } from '../types'
-import { fotografiar, marcarCompactado, olvidarConversacion } from './acciones'
+import type { Arbol, Hallado, Nodo, Paso, Rewind } from '../types'
+import { carpetaDatos, fotografiar, marcarCompactado, olvidarConversacion } from './acciones'
 import { CARACTERES_POR_TOKEN, enLinea, k } from './calculo'
 
 export { enLinea }
@@ -12,11 +12,15 @@ import {
   cambiarHead,
   cambiarOcupado,
   cambiarPestana,
+  cambiarRestaurando,
   cambiarSeleccion,
+  leerAplicado,
+  leerArbol,
   leerHead,
   leerTotal,
   PANEL,
 } from './estado'
+import { restaurarModo } from './selector'
 
 // El árbol de checkpoints de la conversación, con la lógica de rewind.
 //
@@ -33,7 +37,9 @@ import {
 //
 // Como las ramas comparten los uuid de sus mensajes comunes, el padre de un
 // checkpoint nuevo es el checkpoint más profundo que está en su cadena: el
-// árbol sale de la historia real, también tras un rewind nativo.
+// árbol sale de la historia real, también tras un rewind nativo. Lo que ese
+// rewind deja atrás se marca como abandonado y se avisa; borrarlo lo decide la
+// persona (el motor no dice si también restauró los ficheros).
 //
 // Leer y bifurcar transcripts lo hace `scripts/transcript.cjs` con node: pasan
 // con facilidad de los 4 MiB que `$.fs.read` deja leer. El índice vive en
@@ -81,16 +87,29 @@ function enCola<T>(f: () => Promise<T>): Promise<T> {
 // ── Pura: mensajes y forma del árbol ────────────────────────────────────────
 
 const INJERTO = '[Contexto injertado'
+// La nota que se deja al restaurar un punto que un rewind dejó atrás.
+const AVISO_FICHEROS = '[Aviso de contexto-vivo'
+
+export const NOTA_FICHEROS =
+  `${AVISO_FICHEROS}: esta conversación se ha restaurado desde un punto que un rewind dejó atrás.] ` +
+  'Los ficheros del disco pueden no coincidir con lo que se hizo en ella: ese rewind pudo restaurar el código, y desde ' +
+  'entonces otra rama pudo cambiarlo. No des por hecho que los cambios de esta conversación siguen en disco: antes de ' +
+  'editar o de afirmar que algo está hecho, vuelve a leer los ficheros que vayas a tocar y mira git status y git diff.'
+
+// Un mensaje, del ayudante o de `$.session.messages()`: lo justo para saber si
+// es un prompt.
+type ConTexto = { role: string; text: string; toolResults?: readonly unknown[] }
 
 // Lo que escribió la persona: ni resultados de herramientas, ni el resumen
 // injertado por el mod, ni las filas que pone el motor al ejecutar un comando.
-function esPrompt(m: Guardado): boolean {
+function esPrompt(m: ConTexto): boolean {
   const texto = m.text.trimStart()
   return (
     m.role === 'user' &&
     texto !== '' &&
     (m.toolResults?.length ?? 0) === 0 &&
     !texto.startsWith(INJERTO) &&
+    !texto.startsWith(AVISO_FICHEROS) &&
     !/^<(command-|local-command-|system-reminder)/.test(texto)
   )
 }
@@ -273,6 +292,122 @@ export function origenEnCadena(a: Arbol, cadena: readonly string[], head: string
   return mejor
 }
 
+// Un rewind nativo vuelve a un mensaje anterior de la sesión: el HEAD que
+// tenía (`previo`, el del índice para esa sesión) deja de estar en su cadena.
+// El camino de ese HEAD hacia atrás, hasta lo que la cadena aún tiene, queda
+// fuera de la conversación: se marca `abandonado` y se apunta en `rewind`
+// para avisar.
+//
+// Solo cuenta la cadena, no la sesión de cada checkpoint: una sesión abierta
+// desde el árbol (restaurar, fork) copia los mensajes con sus uuid, y sus
+// checkpoints anteriores son los de la sesión de la que salió.
+//
+// El motor no dice si el rewind restauró también los ficheros, así que no se
+// borra nada: solo se marca. La marca es de la conversación que hizo el
+// rewind: el panel no la muestra en el camino de la conversación actual, y se
+// quita del camino de cualquier checkpoint al que se vuelva (`vivificar`).
+export function abandonarTrasRewind(
+  a: Arbol,
+  sesion: string,
+  previo: string | null,
+  cadena: readonly string[],
+): { arbol: Arbol; ids: string[] } {
+  const p = buscarNodo(a, previo)
+  const enCadena = new Set(cadena)
+  if (p === undefined || enCadena.has(p.uuid)) return { arbol: a, ids: [] }
+  const ids: string[] = []
+  for (const n of ancestros(a, p.id)) {
+    if (enCadena.has(n.uuid)) break
+    ids.push(n.id)
+  }
+  if (ids.length === 0) return { arbol: a, ids }
+  const fuera = new Set(ids)
+  // Dos rewinds seguidos en la misma sesión sin responder al aviso: se suman.
+  const antes = a.rewind?.sesion === sesion ? a.rewind.ids.filter(id => !fuera.has(id) && buscarNodo(a, id) !== undefined) : []
+  return {
+    arbol: {
+      ...a,
+      nodos: a.nodos.map(n => (fuera.has(n.id) ? { ...n, abandonado: true } : n)),
+      rewind: { sesion, ids: [...antes, ...ids] },
+    },
+    ids,
+  }
+}
+
+// Dónde cortó un rewind nativo: `escritos` es la conversación del transcript,
+// que hasta el siguiente mensaje sigue teniendo lo de después del rewind, y
+// `memoria` la que el motor tiene ya. Devuelve el uuid del primer prompt que
+// el rewind quitó; null si no quitó ninguno o si las dos no casan (una
+// compactación, por ejemplo), y entonces no se toca nada.
+//
+// En memoria el motor puede tener mensajes que el transcript no guarda como
+// prompts (avisos, notificaciones): lo que no es ningún prompt del transcript
+// se ignora. Un prompt que llega fuera de orden (salta alguno) no es un
+// rewind, y tampoco lo es quedarse sin ninguno con texto propio en memoria
+// (el resumen de una compactación).
+export function corteDeRewind(escritos: readonly Guardado[], memoria: readonly ConTexto[]): string | null {
+  const clave = (m: ConTexto) => enLinea(m.text).slice(0, 200)
+  const prompts = escritos.filter(esPrompt)
+  const claves = prompts.map(clave)
+  let casados = 0
+  let ajenos = 0
+  for (const m of memoria.filter(esPrompt)) {
+    const c = clave(m)
+    if (claves[casados] === c) casados++
+    else if (claves.indexOf(c, casados) >= 0) return null
+    else ajenos++
+  }
+  if (casados >= prompts.length || (casados === 0 && ajenos > 0)) return null
+  return prompts[casados]?.uuid ?? null
+}
+
+// Quita la marca de abandonado del camino de `id`: se ha vuelto a él.
+export function vivificar(a: Arbol, id: string | null | undefined): Arbol {
+  if (id == null) return a
+  const camino = new Set(ancestros(a, id).filter(n => n.abandonado === true).map(n => n.id))
+  if (camino.size === 0) return a
+  return {
+    ...a,
+    nodos: a.nodos.map(n => {
+      if (!camino.has(n.id)) return n
+      const { abandonado: _fuera, ...resto } = n
+      return resto
+    }),
+  }
+}
+
+// Lo que «Borrar» del aviso de rewind se lleva de `ids`: los checkpoints
+// automáticos que no son el HEAD de ninguna sesión y de los que no cuelga nada
+// que se quede (un nombrado, otra rama). Así ningún checkpoint que siga en el
+// árbol pierde a su padre.
+export function borrables(a: Arbol, ids: readonly string[]): Set<string> {
+  const fijos = new Set(Object.values(a.heads))
+  const fuera = new Set(
+    ids.filter(id => {
+      const n = buscarNodo(a, id)
+      return n !== undefined && n.nombre === undefined && !fijos.has(id)
+    }),
+  )
+  for (let cambio = true; cambio; ) {
+    cambio = false
+    for (const id of [...fuera]) {
+      if (hijos(a, id).some(h => !fuera.has(h.id))) {
+        fuera.delete(id)
+        cambio = true
+      }
+    }
+  }
+  return fuera
+}
+
+// El aviso de rewind de `sesion`, sin los checkpoints que ya no existen o a los
+// que se ha vuelto.
+export function rewindDe(a: Arbol | null, sesion: string): Rewind | undefined {
+  if (a?.rewind === undefined || a.rewind.sesion !== sesion) return undefined
+  const ids = a.rewind.ids.filter(id => buscarNodo(a, id)?.abandonado === true)
+  return ids.length === 0 ? undefined : { sesion, ids }
+}
+
 export function turnos(n: number): string {
   return `${n} turno${n === 1 ? '' : 's'}`
 }
@@ -353,13 +488,8 @@ export function resolver(a: Arbol, texto: string): Nodo | undefined {
 
 // `~/.claude/contexto-vivo/ramas/<proyecto>`: la carpeta `.claude` sobre la del
 // mod; si el mod no está bajo una, la `.claude` del proyecto.
-async function carpeta($: $): Promise<string> {
-  const raiz = (await $.session.root()).replace(/\\/g, '/')
-  const proyecto = raiz.replace(/[^A-Za-z0-9]/g, '-')
-  const mod = $.plugin.root.replace(/\\/g, '/')
-  const i = mod.lastIndexOf('/.claude/')
-  const claude = i >= 0 ? mod.slice(0, i + 8) : `${raiz}/.claude`
-  return `${claude}/contexto-vivo/ramas/${proyecto}`
+function carpeta($: $): Promise<string> {
+  return carpetaDatos($, 'ramas')
 }
 
 function esArbol(x: unknown): x is Arbol {
@@ -480,10 +610,12 @@ export async function cargarArbol($: $): Promise<void> {
   // En la cola, pero sin esperarla: quien carga no se queda parado.
   void enCola(async () => {
     const leido = await leerDisco($)
-    const a = await canonizar($, leido)
+    const a = sinVacios(await canonizar($, leido))
     if (a === leido) return
     await escribirDisco($, a)
-    await cambiarHead($, h => a.heads[sesion] ?? h)
+    const quedan = (id: string | null) => id !== null && buscarNodo(a, id) !== undefined
+    await cambiarHead($, h => a.heads[sesion] ?? (quedan(h) ? h : null))
+    await cambiarSeleccion($, s => (quedan(s) ? s : null))
   }).catch(error => $.ui.log(`árbol: ${mensajeDe(error)}`, { to: 'debug' }))
 }
 
@@ -502,16 +634,133 @@ export async function abrirArbolSiToca($: $): Promise<void> {
 }
 
 // Tras /clear la conversación vuelve a estar vacía: el siguiente checkpoint
-// empieza una raíz nueva.
+// empieza una raíz nueva. Lo que el vigía vio era de la conversación de antes.
 export async function soltarHead($: $): Promise<void> {
+  visto = null
   await cambiarHead($, () => null)
+}
+
+// Una conversación vacía (al abrir claude o tras /clear): sin ningún nodo
+// elegido ni nada a medias de la conversación anterior y, si el proyecto tiene
+// árbol, la pestaña Árbol con el árbol entero. `abrir` abre además el panel.
+export async function verArbolEntero($: $, abrir: boolean): Promise<void> {
+  await cambiarSeleccion($, () => null)
+  await cambiarConsulta($, () => null)
+  await cambiarBorrando($, () => null)
+  await cambiarRestaurando($, () => null)
+  const a = await leerArbol($)
+  if (a === null || a.nodos.length === 0) return
+  await cambiarPestana($, () => 'arbol')
+  if (abrir) await $.ui.open({ id: PANEL, title: 'Contexto' })
+}
+
+// Vuelve a leer el índice del disco (otra sesión puede haberlo cambiado),
+// sin checkpoints vacíos y sin tocar el HEAD.
+export function recargarArbol($: $): Promise<void> {
+  return enCola(async () => {
+    const leido = await leerDisco($)
+    const a = sinVacios(leido)
+    if (a === leido) await cambiarArbol($, () => leido)
+    else await escribirDisco($, a)
+  })
+}
+
+function avisarRewind($: $, n: number): void {
+  if (n === 0) return
+  $.ui.toast(
+    `⤺ Rewind: ${n === 1 ? '1 checkpoint queda' : `${n} checkpoints quedan`} fuera de la conversación · /ctx → Árbol para borrar o conservar`,
+    { timeoutMs: 8000 },
+  )
+}
+
+// ── Rewind nativo, en cuanto pasa ───────────────────────────────────────────
+//
+// El motor no avisa de un rewind, y el transcript no cambia hasta el siguiente
+// mensaje; lo que cambia al momento es la conversación que tiene en memoria,
+// que se acorta. Un vigía la mira cada `VIGIA_MS`: si tiene menos mensajes que
+// la vez anterior, se compara con el transcript para saber a qué prompt se
+// volvió, el HEAD pasa al checkpoint de ese punto y lo de después se marca
+// como abandonado. Si no se puede saber, no se toca nada: lo hará el
+// siguiente checkpoint.
+
+export const VIGIA_MS = 1000
+
+let vigia: { cancel: () => void } | null = null
+// Lo que tenía la conversación la última vez que se miró.
+let visto: { sesion: string; mensajes: number } | null = null
+let mirando = false
+
+export function arrancarVigia($: $): void {
+  vigia?.cancel()
+  visto = null
+  vigia = $.clock.every(VIGIA_MS, () => void vigilarRewind($))
+}
+
+export async function vigilarRewind($: $): Promise<void> {
+  if (mirando) return
+  mirando = true
+  try {
+    const sesion = await $.session.id()
+    const memoria = await $.session.messages()
+    const antes = visto
+    visto = { sesion, mensajes: memoria.length }
+    // Quedarse sin ningún mensaje es un /clear (o una sesión nueva), no un
+    // rewind: si lo fuera, el siguiente checkpoint lo marca igualmente.
+    if (antes === null || antes.sesion !== sesion || memoria.length === 0 || memoria.length >= antes.mensajes) return
+    await enCola(() => seguirRewind($, sesion, memoria)).catch(error =>
+      $.ui.log(`árbol: rewind: ${mensajeDe(error)}`, { to: 'debug' }),
+    )
+  } catch {
+    // La conversación no se pudo leer ahora: se mira en la próxima vuelta.
+  } finally {
+    mirando = false
+  }
+}
+
+async function seguirRewind($: $, sesion: string, memoria: readonly ConTexto[]): Promise<void> {
+  const a = await leerDisco($)
+  // El HEAD que el índice guarda para esta sesión (puede ser un checkpoint de
+  // la sesión de la que salió). Sin él (recién empezada, tras /clear) no hay
+  // nada que dejar atrás.
+  const actual = buscarNodo(a, a.heads[sesion])
+  if (actual === undefined) return
+  const e = await ayudante<EstadoSesion>($, ['estado', sesion])
+  if (e.uuid === null) return
+  const corte = corteDeRewind(await ayudante<Guardado[]>($, ['mensajes', sesion, e.uuid]), memoria)
+  const i = corte === null ? -1 : e.cadena.indexOf(corte)
+  // Si el motor ya hubiera escrito el rewind, la cadena del transcript vale tal cual.
+  const cadena = i < 0 ? e.cadena : e.cadena.slice(0, i)
+  const { arbol, ids } = abandonarTrasRewind(a, sesion, actual.id, cadena)
+  if (ids.length === 0) return
+  const origen = origenEnCadena(arbol, cadena, null)
+  const { [sesion]: _antes, ...otros } = arbol.heads
+  await escribirDisco($, { ...arbol, heads: origen === undefined ? otros : { ...otros, [sesion]: origen.id } })
+  await cambiarHead($, () => origen?.id ?? null)
+  await cambiarSeleccion($, s => (s !== null && ids.includes(s) ? (origen?.id ?? null) : s))
+  avisarRewind($, ids.length)
+}
+
+// El modelo y el esfuerzo de la última petición, para guardarlos en el checkpoint.
+async function modoActual($: $): Promise<Pick<Nodo, 'modelo' | 'esfuerzo'>> {
+  const apl = await leerAplicado($)
+  const modelo = apl.modelo ?? (await $.session.model().catch(() => null))
+  return {
+    ...(modelo === null || modelo === '' ? {} : { modelo }),
+    ...(apl.esfuerzo === null || apl.esfuerzo === '' ? {} : { esfuerzo: apl.esfuerzo }),
+  }
 }
 
 async function crearCheckpoint($: $, nombre?: string): Promise<Nodo | null> {
   const sesion = await $.session.id()
   const e = await estadoSesion($, sesion)
-  if (e === null || e.uuid === null || e.mensajes === 0) return null
-  const a = await canonizar($, await leerDisco($))
+  // Sin ningún prompt (turno 0: solo filas de comandos, tras /clear o al
+  // abrir) no hay nada a lo que volver: no es un checkpoint.
+  if (e === null || e.uuid === null || e.mensajes === 0 || e.turnos === 0) return null
+  // El HEAD que el índice guarda para esta sesión: tras /clear (otra sesión)
+  // no hay ninguno y la cadena nueva no es un rewind.
+  const leido = await canonizar($, await leerDisco($))
+  const { arbol: a, ids: abandonados } = abandonarTrasRewind(leido, sesion, leido.heads[sesion] ?? null, e.cadena)
+  avisarRewind($, abandonados.length)
   const origen = origenEnCadena(a, e.cadena, a.heads[sesion] ?? (await leerHead($)))
 
   // Nada nuevo desde el checkpoint más cercano: la sesión está en él, y como
@@ -521,12 +770,16 @@ async function crearCheckpoint($: $, nombre?: string): Promise<Nodo | null> {
     origen !== undefined &&
     (origen.uuid === e.uuid || (await soloRuidoTras($, sesion, e.uuid, origen.uuid)))
   if (origen !== undefined && enOrigen) {
-    const actual = nombre === undefined || nombre === origen.nombre ? origen : { ...origen, nombre }
-    await escribirDisco($, {
-      ...a,
-      nodos: a.nodos.map(n => (n.id === origen.id ? actual : n)),
-      heads: { ...a.heads, [sesion]: origen.id },
-    })
+    // Sin mensajes nuevos, el modo que valga ahora es el de este punto.
+    const conModo = { ...origen, ...(await modoActual($)) }
+    const actual = nombre === undefined || nombre === origen.nombre ? conModo : { ...conModo, nombre }
+    await escribirDisco(
+      $,
+      vivificar(
+        { ...a, nodos: a.nodos.map(n => (n.id === origen.id ? actual : n)), heads: { ...a.heads, [sesion]: origen.id } },
+        origen.id,
+      ),
+    )
     await cambiarHead($, () => origen.id)
     return actual
   }
@@ -547,10 +800,11 @@ async function crearCheckpoint($: $, nombre?: string): Promise<Nodo | null> {
     turnos: e.turnos,
     tokens: (await leerTotal($))?.tokens ?? 0,
     prompt: enLinea(e.prompt).slice(0, 80),
+    ...(await modoActual($)),
   }
   await escribirDisco(
     $,
-    recortar({ ...a, siguiente: a.siguiente + 1, nodos: [...a.nodos, nodo], heads: { ...a.heads, [sesion]: id } }),
+    vivificar(recortar({ ...a, siguiente: a.siguiente + 1, nodos: [...a.nodos, nodo], heads: { ...a.heads, [sesion]: id } }), id),
   )
   await cambiarHead($, () => id)
   return nodo
@@ -586,6 +840,7 @@ export function nombrar($: $, id: string, nombre: string): Promise<void> {
 // la rama ya está escrita: se dice cómo abrirla.
 async function irA($: $, id: string, nombre?: string): Promise<void> {
   const fork = nombre !== undefined
+  await cambiarRestaurando($, () => null)
   await cambiarOcupado($, () => (fork ? `Creando el fork «${nombre}»…` : `Restaurando ${id}…`))
   try {
     await checkpoint($).catch(error => $.ui.log(`árbol: ${mensajeDe(error)}`, { to: 'debug' }))
@@ -595,14 +850,20 @@ async function irA($: $, id: string, nombre?: string): Promise<void> {
       return
     }
     const etiqueta = etiquetaNodo(nodo)
+    // Un punto que un rewind dejó atrás: puede que su código ya no esté en
+    // disco. Se le dice al modelo en la conversación nueva (antes de quitarle
+    // la marca al volver a él).
+    const avisar = nodo.abandonado === true
     const rama = await ayudante<{ id: string }>($, ['fork', nodo.sesion, nodo.uuid, ...(fork ? [nombre] : [])])
     await enCola(async () => {
       const a = await leerDisco($)
-      await escribirDisco($, {
-        ...a,
-        heads: { ...a.heads, [rama.id]: nodo.id },
-        titulos: fork ? { ...a.titulos, [rama.id]: nombre } : a.titulos,
-      })
+      await escribirDisco(
+        $,
+        vivificar(
+          { ...a, heads: { ...a.heads, [rama.id]: nodo.id }, titulos: fork ? { ...a.titulos, [rama.id]: nombre } : a.titulos },
+          nodo.id,
+        ),
+      )
     })
 
     // La sesión nueva abre el panel en el árbol al empezar, aunque el mod se
@@ -610,7 +871,11 @@ async function irA($: $, id: string, nombre?: string): Promise<void> {
     await $.store.set(CLAVE_ABRIR, rama.id)
     await $.command.run({ command: 'resume', args: rama.id })
     if ((await $.session.id()) !== rama.id) {
-      $.ui.log(`⑂ La rama está lista en la sesión ${rama.id}: ábrela con /resume ${rama.id} o claude --resume ${rama.id}`)
+      $.ui.log(
+        `⑂ La rama está lista en la sesión ${rama.id}: ábrela con /resume ${rama.id} o claude --resume ${rama.id}${
+          avisar ? '. Un rewind dejó atrás ese punto: los ficheros pueden no coincidir con la conversación.' : ''
+        }`,
+      )
       $.ui.toast(`⑂ Rama creada, pero no se abrió sola: /resume ${rama.id.slice(0, 8)}…`)
       return
     }
@@ -623,12 +888,34 @@ async function irA($: $, id: string, nombre?: string): Promise<void> {
     await cambiarHead($, () => nodo.id)
     await cambiarSeleccion($, () => nodo.id)
     await abrirArbolSiToca($)
+    // El modelo y el esfuerzo con que se trabajaba en ese punto.
+    const modo = await restaurarModo($, nodo.modelo, nodo.esfuerzo)
+    const avisado = avisar && (await anotarFicheros($))
     await fotografiar($)
-    $.ui.toast(fork ? `⑂ Fork «${nombre}» desde ${etiqueta}` : `⤺ En ${etiqueta} · ${turnos(nodo.turnos)}`)
+    const nota = `${modo.length > 0 ? ` · ${modo.join(' ')}` : ''}${avisado ? ' · ⚠ los ficheros pueden no coincidir (Claude lo sabe)' : ''}`
+    $.ui.toast(fork ? `⑂ Fork «${nombre}» desde ${etiqueta}${nota}` : `⤺ En ${etiqueta} · ${turnos(nodo.turnos)}${nota}`, {
+      timeoutMs: avisado ? 8000 : 4000,
+    })
   } catch (error) {
     $.ui.toast(`No se pudo ${fork ? 'crear el fork' : 'restaurar'}: ${mensajeDe(error)}`)
   } finally {
     await cambiarOcupado($, () => null)
+  }
+}
+
+// Deja en la conversación la nota de que los ficheros pueden no coincidir, como
+// un mensaje que el modelo lee (como el injerto). Dice si se pudo.
+async function anotarFicheros($: $): Promise<boolean> {
+  try {
+    const hecho = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: NOTA_FICHEROS }] } })
+    if ('deny' in hecho && hecho.deny !== undefined) {
+      $.ui.log(`No se pudo avisar de los ficheros: ${String(hecho.deny)}. Pídele a Claude que relea los ficheros antes de editar.`)
+      return false
+    }
+    return true
+  } catch (error) {
+    $.ui.log(`No se pudo avisar de los ficheros: ${mensajeDe(error)}. Pídele a Claude que relea los ficheros antes de editar.`)
+    return false
   }
 }
 
@@ -643,23 +930,103 @@ export function forkear($: $, id: string, nombre: string): Promise<void> {
   return irA($, id, limpio === '' ? `fork de ${id}` : limpio)
 }
 
+// Lo que `borrando` guarda mientras se confirma limpiar el árbol entero (los
+// ids de los nodos son `n<número>`, así que no choca con ninguno).
+export const TODO_EL_ARBOL = '*'
+
 // Quita del árbol el nodo y todo lo que cuelga de él. Las sesiones siguen en
-// disco (en /resume); solo dejan de verse aquí. No quita la rama en que está
-// la conversación.
+// disco (en /resume); solo dejan de verse aquí.
+//
+// Si se lleva la rama en que está la conversación, esta se queda sin
+// checkpoint: el siguiente que se guarde cuelga del checkpoint más profundo
+// que quede en su cadena (el padre del borrado) o empieza una raíz nueva.
 export function borrarRama($: $, id: string): Promise<void> {
   return enCola(async () => {
     await cambiarBorrando($, () => null)
     const a = await leerDisco($)
+    if (buscarNodo(a, id) === undefined) return
     const fuera = descendientes(a, id)
     const head = await leerHead($)
-    if (head !== null && fuera.has(head)) {
-      $.ui.toast('No se borra la rama en la que estás: ve antes a otro checkpoint')
-      return
-    }
+    const sinHead = head !== null && fuera.has(head)
     const heads = Object.fromEntries(Object.entries(a.heads).filter(([, h]) => !fuera.has(h)))
-    await escribirDisco($, { ...a, nodos: a.nodos.filter(n => !fuera.has(n.id)), heads })
-    await cambiarSeleccion($, s => (s !== null && fuera.has(s) ? head : s))
-    $.ui.toast(`✕ Borrado${fuera.size === 1 ? ' 1 checkpoint' : `s ${fuera.size} checkpoints`}`)
+    const nodos = a.nodos.filter(n => !fuera.has(n.id))
+    await escribirDisco($, sinRewindVacio({ ...a, nodos, heads }))
+    if (sinHead) await cambiarHead($, () => null)
+    await cambiarSeleccion($, s => (s !== null && fuera.has(s) ? null : s))
+    $.ui.toast(
+      `✕ Borrado${fuera.size === 1 ? ' 1 checkpoint' : `s ${fuera.size} checkpoints`}${sinHead ? ' · la conversación actual sigue, sin checkpoint' : ''}`,
+    )
+  })
+}
+
+// Un checkpoint de turno 0 sin nombre: una conversación sin ningún prompt.
+// Las versiones anteriores los guardaban (al restaurar o hacer fork desde una
+// conversación recién limpiada); al cargar el árbol se quitan: sus hijos pasan
+// a su padre y la sesión que estaba en él se queda sin HEAD.
+export function sinVacios(a: Arbol): Arbol {
+  const vacios = new Map(a.nodos.filter(n => n.turnos === 0 && n.nombre === undefined).map(n => [n.id, n.padre]))
+  if (vacios.size === 0) return a
+  const subir = (id: string | null): string | null => {
+    let actual = id
+    while (actual !== null && vacios.has(actual)) actual = vacios.get(actual) ?? null
+    return actual
+  }
+  const nodos = a.nodos.filter(n => !vacios.has(n.id)).map(n => (n.padre !== null && vacios.has(n.padre) ? { ...n, padre: subir(n.padre) } : n))
+  const heads = Object.fromEntries(Object.entries(a.heads).filter(([, h]) => !vacios.has(h)))
+  return sinRewindVacio({ ...a, nodos, heads })
+}
+
+// Quita el aviso de rewind si ya no le queda ningún checkpoint.
+function sinRewindVacio(a: Arbol): Arbol {
+  if (a.rewind === undefined) return a
+  const ids = a.rewind.ids.filter(id => buscarNodo(a, id) !== undefined)
+  if (ids.length > 0) return { ...a, rewind: { ...a.rewind, ids } }
+  const { rewind: _fuera, ...resto } = a
+  return resto
+}
+
+// «Borrar» del aviso de rewind: quita del árbol lo abandonado que se puede
+// quitar sin dejar huérfano a nadie (`borrables`). Los nombrados y lo que
+// tiene otras ramas se quedan, marcados. Las sesiones siguen en disco.
+export function borrarAbandonados($: $): Promise<void> {
+  return enCola(async () => {
+    const a = await leerDisco($)
+    const aviso = rewindDe(a, await $.session.id())
+    if (aviso === undefined) return
+    const fuera = borrables(a, aviso.ids)
+    const { rewind: _hecho, ...resto } = a
+    await escribirDisco($, { ...resto, nodos: a.nodos.filter(n => !fuera.has(n.id)) })
+    await cambiarSeleccion($, s => (s !== null && fuera.has(s) ? null : s))
+    const quedan = aviso.ids.length - fuera.size
+    $.ui.toast(
+      `✕ ${fuera.size === 1 ? 'Borrado 1 checkpoint' : `Borrados ${fuera.size} checkpoints`} del rewind${quedan > 0 ? ` · ${quedan === 1 ? 'queda 1' : `quedan ${quedan}`} con nombre, con ramas o abiertos en otra sesión` : ''}`,
+    )
+  })
+}
+
+// «Conservar» del aviso de rewind: los checkpoints se quedan, marcados.
+export function conservarAbandonados($: $): Promise<void> {
+  return enCola(async () => {
+    const a = await leerDisco($)
+    if (a.rewind === undefined) return
+    const { rewind: _hecho, ...resto } = a
+    await escribirDisco($, resto)
+  })
+}
+
+// Vacía el árbol del proyecto: todos los checkpoints, de todas las sesiones.
+// Las sesiones siguen en disco (en /resume); el siguiente checkpoint empieza
+// una raíz nueva. Los ids no se reutilizan, para que no se confundan con los
+// de exportaciones anteriores.
+export function limpiarArbol($: $): Promise<void> {
+  return enCola(async () => {
+    await cambiarBorrando($, () => null)
+    const a = await leerDisco($)
+    await escribirDisco($, { ...VACIO, siguiente: a.siguiente })
+    await cambiarHead($, () => null)
+    await cambiarSeleccion($, () => null)
+    await cambiarConsulta($, () => null)
+    $.ui.toast(`✕ Árbol limpio · ${a.nodos.length === 1 ? '1 checkpoint borrado' : `${a.nodos.length} checkpoints borrados`}`)
   })
 }
 
@@ -896,7 +1263,7 @@ export function informeArbol(a: Arbol | null, head: string | null): string {
   const filas = filasArbol(a, head, null, false)
   const lineas = filas.map(f => {
     const n = f.nodo
-    const marca = n.id === head ? '◉' : n.nombre !== undefined ? '◆' : '○'
+    const marca = n.id === head ? '◉' : n.nombre !== undefined ? '◆' : n.abandonado === true ? '◌' : '○'
     const plegados = f.plegados > 0 ? `┄ ${f.plegados} ┄ ` : ''
     return `${f.guia}${plegados}${marca} ${n.id} ${etiquetaNodo(n)} · t${n.turnos} · ${k(n.tokens)}${n.id === head ? '  ← aquí' : ''}`
   })
@@ -904,7 +1271,7 @@ export function informeArbol(a: Arbol | null, head: string | null): string {
     `Árbol de checkpoints · ${a.nodos.length} nodos`,
     ...lineas,
     '',
-    '/cp <nombre> · /cp-ir <id|nombre> · /cp-fork <id|nombre> [nombre] · /cp-diff · /cp-buscar · /cp-exportar · /contexto → ⎇ Árbol',
+    '/cp <nombre> · /cp-ir <id|nombre> · /cp-fork <id|nombre> [nombre] · /cp-diff · /cp-buscar · /cp-exportar · /ctx → ⎇ Árbol',
   ].join('\n')
 }
 

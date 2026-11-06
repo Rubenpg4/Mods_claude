@@ -9,20 +9,34 @@ export type Llamada = {
   // Ruta completa del fichero leído y si se leyó solo una parte (offset/limit).
   ruta?: string
   parcial?: boolean
+  // Los argumentos de la llamada (JSON recortado) y el comienzo de lo que
+  // devolvió: las pruebas que lleva el informe de un hallazgo.
+  entrada?: string
+  muestra?: string
 }
 
 // Una porción del gráfico de quesitos; `rgb` es 0xRRGGBB.
 export type Quesito = { nombre: string; tokens: number; rgb: number }
 
+// Las clases de mal uso que detecta el diagnóstico.
+export type TipoHallazgo = 'relectura' | 'lectura' | 'bash' | 'mcp' | 'subagente' | 'otra' | 'memoria' | 'mcp-cargado'
+
 // Un mal uso del contexto detectado, con lo que cuesta y cómo evitarlo.
-// `clave` lo identifica para ignorarlo; `ruta`, el fichero que se puede abrir.
+// `clave` lo identifica para ignorarlo; `ruta`, el fichero que se puede abrir;
+// `pruebas`, lo observado (llamadas, argumentos, resultado) que va en el
+// informe para resolverlo con IA.
 export type Hallazgo = {
   clave: string
+  tipo: TipoHallazgo
   gravedad: 'alta' | 'media'
   texto: string
   consejo: string
   tokens: number
   ruta?: string
+  herramienta?: string
+  pruebas: string[]
+  // El comienzo de lo que devolvió la llamada, tal cual.
+  muestra?: string
 }
 
 // Una fila del desglose (categoría, fichero de memoria, servidor MCP, skill);
@@ -59,7 +73,6 @@ export type Total = {
   tokens: number
   ventana: number
   porcentaje: number
-  limites: Limite[]
   // Parte de la entrada servida desde la caché, 0–100; null sin dato.
   cache: number | null
   // Tokens que esa petición tuvo que escribir de nuevo en la caché.
@@ -123,7 +136,20 @@ export type Nodo = {
   turnos: number
   tokens: number
   prompt: string
+  // El modelo y el esfuerzo con que se trabajaba en este punto (los de la
+  // última petición): volver aquí los vuelve a poner. Los checkpoints de
+  // antes de guardarlos no los tienen.
+  modelo?: string
+  esfuerzo?: string
+  // Un rewind nativo dejó este punto fuera de la conversación de su sesión
+  // (y quizá también restauró los ficheros): se sigue pudiendo volver a él,
+  // pero puede que el código ya no esté así.
+  abandonado?: true
 }
+
+// Un rewind detectado cuyo aviso espera respuesta: la sesión en que pasó y los
+// checkpoints que dejó fuera.
+export type Rewind = { sesion: string; ids: string[] }
 
 // Un acierto de la búsqueda en el árbol: el checkpoint y el texto alrededor.
 export type Hallado = { id: string; quien: string; extracto: string }
@@ -146,6 +172,8 @@ export type Arbol = {
   nodos: Nodo[]
   heads: Record<string, string>
   titulos: Record<string, string>
+  // El último rewind cuyo aviso espera «Borrar» o «Conservar».
+  rewind?: Rewind
 }
 
 // El último umbral avisado y el `orden` de la última llamada de entonces.
@@ -168,6 +196,9 @@ declare module 'claude-code' {
     'contexto-vivo': {
       llamadas: Shaped<Llamada[]>
       total: Shaped<Total | null>
+      // Las ventanas de uso (5h, 7d) de la última lectura: no se borran con
+      // /clear ni al compactar, y se guardan en $.store para tenerlas al abrir.
+      limites: Shaped<Limite[]>
       foto: Shaped<Foto | null>
       aviso: Shaped<Aviso>
       // Dónde está el reparto: [] la raíz, ['Memoria'], ['Herramientas MCP', 'Notion'].
@@ -197,6 +228,8 @@ declare module 'claude-code' {
       verTodo: Shaped<boolean>
       // El nodo cuyo borrado espera confirmación.
       borrando: Shaped<string | null>
+      // El nodo abandonado por un rewind cuya restauración espera confirmación.
+      restaurando: Shaped<string | null>
       // Una operación del árbol en curso (restaurar, fork, injertar), para el panel.
       ocupado: Shaped<string | null>
       // La búsqueda o comparación abierta en la pestaña Árbol.

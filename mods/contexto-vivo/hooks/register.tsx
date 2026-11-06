@@ -1,8 +1,12 @@
 import type { Register, Timer } from 'claude-code'
 
 import {
+  apuntarLimites,
   cargarIgnorados,
+  cargarLimites,
   fotografiar,
+  horaVisible,
+  limitesVisibles,
   marcarHora,
   olvidarConversacion,
   refrescar,
@@ -14,6 +18,7 @@ import {
 } from './acciones'
 import {
   abrirArbolSiToca,
+  arrancarVigia,
   buscar,
   cargarArbol,
   checkpoint,
@@ -24,9 +29,11 @@ import {
   informeArbol,
   informeBusqueda,
   informeComparacion,
+  recargarArbol,
   resolver,
   restaurar,
   soltarHead,
+  verArbolEntero,
 } from './arbol'
 import { diagnosticar, enLinea, informe, pie, tendencia } from './calculo'
 import { leerConfig } from './config'
@@ -34,7 +41,6 @@ import {
   cambiarPestana,
   cambiarUltimoPrompt,
   cambiarAplicado,
-  leerAhora,
   leerAplicado,
   leerArbol,
   leerFoto,
@@ -61,7 +67,7 @@ let tic: Timer | null = null
 
 const ARBOL_VACIO = { version: 2 as const, siguiente: 1, nodos: [], heads: {}, titulos: {} }
 
-// Contexto vivo: panel /contexto (reparto navegable, diagnóstico, tendencia,
+// Contexto vivo: panel /ctx (reparto navegable, diagnóstico, tendencia,
 // subagentes, llamadas y árbol de checkpoints), resumen /contexto-top, los
 // comandos del árbol (/cp, /cp-ir, /cp-fork, /cp-arbol, /cp-diff, /cp-buscar,
 // /cp-exportar) y la cifra en la fila de «auto mode on». Los umbrales vienen de
@@ -71,7 +77,7 @@ export const register: Register = (on, opciones) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'contexto',
+      name: 'ctx',
       description: 'Abre el panel de la ventana de contexto en directo',
     })
     await $.command.register({
@@ -115,7 +121,21 @@ export const register: Register = (on, opciones) => {
     await cargarArbol($).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
     // Tras restaurar o hacer un fork, la sesión nueva empieza con el árbol abierto.
     await abrirArbolSiToca($).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
+    // Una conversación vacía empieza con el árbol entero a la vista, sin
+    // ningún nodo elegido.
+    if (e.isInteractive) {
+      const mensajes = await $.session.messages().catch(() => null)
+      if (mensajes !== null && mensajes.length === 0) {
+        await verArbolEntero($, true).catch(error => $.ui.log(`árbol: ${String(error)}`, { to: 'debug' }))
+      }
+    }
+    // Un rewind nativo se refleja en el árbol en cuanto pasa, no al acabar el
+    // siguiente turno.
+    arrancarVigia($)
     await cargarIgnorados($)
+    // Los límites 5h/7d de la última lectura, hasta que llegue la primera
+    // respuesta de esta sesión.
+    await cargarLimites($)
     await marcarHora($)
     await refrescar($, cfg)
     // Un tic por minuto para que la cuenta atrás de 5h/7d no se quede parada
@@ -125,7 +145,7 @@ export const register: Register = (on, opciones) => {
     return r
   })
 
-  on('command.run', { command: 'contexto' }, async $ => {
+  on('command.run', { command: 'ctx' }, async $ => {
     await fotografiar($)
     await $.ui.open({ id: PANEL, title: 'Contexto' })
 
@@ -369,10 +389,31 @@ export const register: Register = (on, opciones) => {
     return r
   }).catch(($, e, next) => next(e))
 
+  // El motor avisa cuando una ventana de uso se mueve, también sin turno.
+  on('session.measure', async ($, e, next) => {
+    if (e.changed.includes('rateLimits')) await apuntarLimites($, e.rateLimits)
+
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await soltarHead($)
       await olvidarConversacion($)
+      // /clear no vuelve a pasar por `session.start`: cuando la sesión nueva
+      // ya está, se carga otra vez lo que carga el arranque (el estado puede
+      // empezar vacío) y se abre el árbol entero, sin ningún nodo elegido.
+      await verArbolEntero($, false)
+      $.clock.after(50, () => {
+        void (async () => {
+          await recargarArbol($)
+          await verArbolEntero($, true)
+          await cargarIgnorados($)
+          await cargarLimites($)
+          await marcarHora($)
+          await refrescar($, cfg)
+        })().catch(error => $.ui.log(`tras /clear: ${String(error)}`, { to: 'debug' }))
+      })
     }
 
     return next(e)
@@ -385,7 +426,7 @@ export const register: Register = (on, opciones) => {
     const t = await leerTotal($)
     const avisos = diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($)).length
     const turnos = tendencia(await leerHistorial($), f, t).turnosRestantes
-    const cola = pie(t, turnos, avisos, await leerAhora($))
+    const cola = pie(t, await limitesVisibles($), turnos, avisos, await horaVisible($))
     // Modelo y esfuerzo al final de la fila: el modelo de la sesión tal como lo
     // muestra /model (se lee en cada dibujo, no queda viejo), o el de la última
     // petición si no se puede leer; el esfuerzo, el del último /effort o petición.
