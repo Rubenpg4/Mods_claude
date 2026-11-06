@@ -91,7 +91,7 @@ mods/contexto-vivo/
 | `contexto/tendencia.ts` | Crecimiento por turno y turnos hasta compactar | ✔ |
 | `contexto/informes.ts` | `pie` (cola de la fila) e `informe` (`/contexto-top`) | ✔ |
 | `contexto/ignorados.ts` | Hallazgos ignorados, guardados en `$.store` | |
-| `ia/informe.ts` | Informe Markdown de un hallazgo, encargo por tipo, título y nombre de fichero; `resolucionIA` (lee «## Resuelto») y `sinResolver` | ✔ |
+| `ia/informe.ts` | Informe Markdown de un hallazgo (front-matter y bloques XML), guía por tipo (`GUIAS`), título y nombre de fichero; `resolucionIA` (lee «## Resuelto») y `sinResolver` | ✔ |
 | `ia/lanzar.ts` | Escribe el informe, abre `claude` aparte (Windows Terminal o consola, PowerShell 7) y sigue el hallazgo hasta que se resuelve | |
 | `selector/modelos.ts` | Modelos y niveles ofrecidos y sus colores | ✔ |
 | `selector/aplicar.ts` | Aplicar al momento o al final del turno; ocultar el eco de los comandos propios | |
@@ -262,10 +262,28 @@ Una llamada que repite otra con el mismo resultado no cuenta además en su grupo
 
 Cada hallazgo lleva `pruebas` (llamadas, argumentos, tamaños) y, si hay, `muestra` (comienzo del resultado). **Resolver con IA** (`ia/lanzar.ts`):
 
-1. Escribe el informe en `informes/<proyecto>/<fecha>-<clave>.md`, con un encargo distinto según el tipo (`ENCARGOS`).
+1. Escribe el informe (`informeIA`) en `informes/<proyecto>/<fecha>-<clave>.md`, con los antecedentes de la misma clave en `seguimiento`.
 2. Abre `claude --model sonnet --effort high -n <título> <prompt>`: primero en una pestaña de Windows Terminal (`wt.exe`) y, si no hay, con `cmd /c start`. En los dos casos con PowerShell 7 `-NoExit` y la orden en `-EncodedCommand`, para que no se rompan comillas ni acentos.
 3. Si no puede abrir ninguna terminal, copia la orden al portapapeles.
 4. Apunta el hallazgo **en curso** en `seguimiento` (`$.store` y átomo) y arranca el `sondeo`.
+
+**El informe** sigue las pautas de Anthropic para prompts: datos primero, cada bloque en su etiqueta XML, y el encargo al final.
+
+| Parte | Contenido |
+|-------|-----------|
+| Front-matter YAML | `clave`, `tipo`, `gravedad`, `tokens`, `veces`, `ventana_pct`, `proyecto`, `sesion`, `detectado` y, si toca, `recaida: true` |
+| `<contexto>` | Sesión, fecha, proyecto, ocupación y por qué importa el contexto (`POR_QUE_IMPORTA`) |
+| `<hallazgo>` | Qué, tipo con su definición, por qué cuesta, gravedad explicada, coste, veces, fichero, herramienta y consejo rápido |
+| `<pruebas>`, `<muestra>` | Lo medido y el comienzo del resultado |
+| `<antecedentes>` | Las veces anteriores con la misma clave en el proyecto; si alguna se resolvió, es una **recaída** y pide averiguar por qué no bastó |
+| `<encargo>` | Atacar la causa para que no vuelva a pasar, sin continuar la tarea de aquella sesión |
+| `<guia>` | Del tipo (`GUIAS`): causas a comprobar y soluciones, por orden, y un ejemplo para calibrar |
+| `<criterios_de_exito>` | Del tipo, verificables |
+| `<restricciones>` | Citar pruebas y decir si no basta, aprobación antes de cambiar, cambio mínimo, comprobar opciones de Claude Code, estilo del proyecto |
+| `<formato_de_respuesta>` | Causa, de 1 a 3 opciones con recomendación y, tras aprobarla, el cambio y su verificación |
+| `## Al terminar` | Pide `## Resuelto` con `Cambio:`, `Ficheros:` y `Verificación:` |
+
+Un texto medido que cierre una de esas etiquetas se neutraliza (`&lt;/…>`). `resolucionIA` lee hasta 400 caracteres bajo `## Resuelto`.
 
 **Seguimiento hasta resolverlo.** El informe termina pidiendo a la sesión aparte que, cuando el cambio esté aplicado y aprobado, añada al final una línea `## Resuelto` y debajo lo que se cambió (`MARCA_RESUELTO`). Mientras haya hallazgos en curso, `comprobarResueltos` lee cada `SONDEO_MS` (10 s) sus informes; `resolucionIA` devuelve el texto bajo esa línea (hasta el siguiente título) y el hallazgo pasa a resuelto con la hora y ese resumen, con un aviso emergente. Se compara con lo guardado en `$.store`, así que si otra sesión con el mod (la propia sesión aparte también lo carga) lo marca antes, el cambio se ve igual. La persona puede marcarlo a mano (`marcarResuelto`) o devolverlo a los avisos (`reabrir`).
 
@@ -315,7 +333,7 @@ Para añadir una opción: declárala en `userConfig`, añádela a `Config` y a `
 | los checkpoints de turno 0… | `sinVacios` |
 | el texto de la conversación… | `enLinea` |
 | la respuesta del motor a una interrupción… | `soloRuido` |
-| el informe para la IA… | `informeIA`, `tituloIA`, `ficheroIA`, `resumirEntrada` |
+| el informe para la IA… | `informeIA` (front-matter, orden de las etiquetas, guía del tipo, etiquetas neutralizadas, recaída), `resolucionIA`, `sinResolver`, `tituloIA`, `ficheroIA`, `resumirEntrada` |
 | el diagnóstico distingue… | Relecturas justificadas y solapes, `repetida`, agrupación por patrón (`patronComando`), `busqueda`, `exploracion`, `cache`, `subagente-lleno`, `ritmo` |
 | la sesión aparte se abre en PowerShell 7… | `lanzadoresIA`, `ordenPwsh`, `codificarPwsh` |
 

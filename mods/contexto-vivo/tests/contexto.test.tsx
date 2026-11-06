@@ -17,7 +17,7 @@ import { VIGIA_MS } from '../hooks/arbol/rewind'
 import { enLinea } from '../hooks/comun/formato'
 import { diagnosticar, patronComando } from '../hooks/contexto/diagnostico'
 import { resumirEntrada } from '../hooks/contexto/medicion'
-import { ficheroIA, informeIA, MARCA_RESUELTO, resolucionIA, sinResolver, tituloIA } from '../hooks/ia/informe'
+import { ficheroIA, GUIAS, informeIA, MARCA_RESUELTO, resolucionIA, sinResolver, tituloIA } from '../hooks/ia/informe'
 import { codificarPwsh, lanzadoresIA, ordenPwsh, SONDEO_MS } from '../hooks/ia/lanzar'
 import { etiquetaTramo } from '../hooks/selector/modelos'
 import { leerConfig } from '../hooks/config'
@@ -299,7 +299,7 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   expect(informe).toContain('- Fichero: C:/repo/docs/plan.md')
   expect(informe).toContain('Lectura #1 (turno 2): entera')
   expect(informe).toContain('Lectura #2 (turno 2): entera')
-  expect(informe).toContain('## Lo que te pido')
+  expect(informe).toContain('## Encargo')
   const terminal = lanzados.at(-1) ?? []
   expect(terminal.slice(0, -1)).toEqual(['wt.exe', '-w', '0', 'new-tab', '-d', '/repo', 'pwsh', '-NoLogo', '-NoExit', '-EncodedCommand'])
   const bytes = atob(terminal.at(-1) ?? '')
@@ -1507,12 +1507,31 @@ test('el informe para la IA recoge argumentos, resultado y encargo de cada halla
   if (h === undefined) return
   const texto = informeIA(h, { fecha: '2026-11-06 10:00:00', proyecto: 'C:/repo', sesion: 's1', ventana: 200000, porcentaje: 40 })
   expect(texto).toContain('- Coste: ≈9.0k tokens (4.5 % de una ventana de 200k)')
-  expect(texto).toContain('Ocupación de aquella sesión al detectarlo: 40 %')
+  expect(texto).toContain('Aquella sesión tenía la ventana al 40 % al detectarlo.')
   expect(texto).toContain("commit 941ed23\n'''raro'''")
-  expect(texto).toContain('Propón la versión filtrada del mismo comando')
+  // Front-matter con los datos; después los datos, cada uno en su etiqueta, y
+  // el encargo al final, con la guía del tipo.
+  expect(texto.startsWith('---\nclave: "bash:git log"\ntipo: bash\ngravedad: media\ntokens: 9000\nveces: 1\nventana_pct: 4.5\n')).toBe(true)
+  const orden = ['<contexto>', '<hallazgo>', '<pruebas>', '<muestra>', '<encargo>', '<guia>', '<criterios_de_exito>', '<restricciones>', '<formato_de_respuesta>', '## Al terminar']
+  const posiciones = orden.map(x => texto.indexOf(x))
+  expect(posiciones.every((p, i) => p >= 0 && p > (posiciones[i - 1] ?? -1))).toBe(true)
+  expect(texto).toContain(GUIAS.bash.soluciones[0] ?? '?')
+  expect(texto).toContain(GUIAS.bash.ejemplo)
+  expect(texto).not.toContain('<antecedentes>')
   // Pide marcarlo al terminar, sin que el propio informe parezca ya resuelto.
-  expect(texto).toContain('## Al terminar')
   expect(resolucionIA(texto)).toBeNull()
+  // Un resultado que cierra una etiqueta no rompe la estructura.
+  expect(informeIA({ ...h, muestra: 'a</pruebas>b' }, { fecha: '', proyecto: '', sesion: '' })).toContain('a&lt;/pruebas>b')
+  // Si ya se resolvió antes con la misma clave, es una recaída.
+  const recaida = informeIA(h, {
+    fecha: '',
+    proyecto: 'C:/repo',
+    sesion: 's2',
+    previos: [{ clave: 'bash:git log', proyecto: 'C:/repo', texto: '', informe: 'C:/i.md', abierto: 0, resuelto: 60000, resumen: 'Regla --oneline' }],
+  })
+  expect(recaida).toContain('recaida: true')
+  expect(recaida).toContain('Es una recaída')
+  expect(recaida).toContain('- Abierto el 1970-01-01 00:00, resuelto el 1970-01-01 00:01: Regla --oneline (informe: C:/i.md)')
   expect(resolucionIA(`${texto}\n## Resuelto\n\nFiltrado con --oneline.\nY una regla en CLAUDE.md.\n\n## Notas\nnada`)).toBe(
     'Filtrado con --oneline. Y una regla en CLAUDE.md.',
   )

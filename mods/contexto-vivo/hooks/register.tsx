@@ -414,13 +414,23 @@ export const register: Register = (on, opciones) => {
   // A la izquierda, en la fila de «auto mode on»: se añade como cola y la línea
   // del motor (sus indicadores vivos) se queda como está.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    const f = await leerFoto($)
-    const t = await leerTotal($)
-    const historial = await leerHistorial($)
-    const entorno = { turnos: historial, subagentes: await leerSubagentes($), total: t, roturas: await leerRoturas($) }
-    const avisos = sinResolver(diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($), entorno), await leerSeguimiento($)).length
+    // Se redibuja cada minuto (tic): las lecturas van a la vez, no en fila.
+    const [f, t, historial, subagentes, roturas, lista, ignorados, seguimiento, limites, hora] = await Promise.all([
+      leerFoto($),
+      leerTotal($),
+      leerHistorial($),
+      leerSubagentes($),
+      leerRoturas($),
+      leerLlamadas($),
+      leerIgnorados($),
+      leerSeguimiento($),
+      limitesVisibles($),
+      horaVisible($),
+    ])
+    const entorno = { turnos: historial, subagentes, total: t, roturas }
+    const avisos = sinResolver(diagnosticar(f, lista, cfg, ignorados, entorno), seguimiento).length
     const turnos = tendencia(historial, f, t).turnosRestantes
-    const cola = pie(t, await limitesVisibles($), turnos, avisos, await horaVisible($))
+    const cola = pie(t, limites, turnos, avisos, hora)
     // Modelo y esfuerzo al final de la fila: el modelo de la sesión tal como lo
     // muestra /model (se lee en cada dibujo, no queda viejo), o el de la última
     // petición si no se puede leer; el esfuerzo, el del último /effort o petición.

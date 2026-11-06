@@ -64,6 +64,8 @@ export async function resolverConIA($: EngineInterface, h: Hallazgo, superficie?
     sesion,
     ventana: total?.ventana,
     porcentaje: total?.porcentaje,
+    // Lo que ya se hizo con este hallazgo: si se resolvió y volvió, es una recaída.
+    previos: (await guardados($)).filter(s => s.proyecto === raiz && s.clave === h.clave),
   })
   try {
     await $.fs.write(ruta, informe)
