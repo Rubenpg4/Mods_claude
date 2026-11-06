@@ -15,14 +15,31 @@ Colección de mods para [Claude Code](https://claude.com/claude-code): extension
 
 ## Instalación
 
-Copia la carpeta del mod en `~/.claude/mods/` y reinicia Claude Code:
+El repositorio es un marketplace de Claude Code. En el prompt de una sesión de terminal:
 
-```sh
-git clone https://github.com/Rubenpg4/Mods_claude.git
-cp -r Mods_claude/mods/contexto-vivo ~/.claude/mods/
+```
+/plugin install contexto-vivo --marketplace Rubenpg4/Mods_claude
 ```
 
-Si quieres seguir las actualizaciones, puedes enlazar la carpeta en lugar de copiarla (en Linux/macOS `ln -s`; en Windows, una junction con `New-Item -ItemType Junction`).
+O desde una consola:
+
+```sh
+claude plugin install contexto-vivo --marketplace Rubenpg4/Mods_claude
+```
+
+Responde `y` para añadir el marketplace y elige el ámbito (el de usuario, el primero, lo carga en todas las sesiones). Para actualizarlo: `claude plugin update contexto-vivo` y, en una sesión abierta, `/reload-plugins`. En la app de escritorio: **+** junto al prompt → Plugins → Add marketplace con `Rubenpg4/Mods_claude` → Add plugin.
+
+Hace falta Claude Code 2.1.319 o posterior (`claude --version`; `claude update` para actualizar).
+
+### Desde una copia local (para desarrollar el mod)
+
+Clona el repositorio y apunta Claude Code a la carpeta del mod con `CLAUDE_CODE_PLUGIN_DIRS`, en el bloque `env` de `~/.claude/settings.json` (copiarla a `~/.claude/mods/` sin esto no la carga):
+
+```json
+{ "env": { "CLAUDE_CODE_PLUGIN_DIRS": "C:/ruta/a/Mods_claude/mods/contexto-vivo" } }
+```
+
+Con esta forma, lo que edites se recarga en caliente. No la combines con la instalación desde el marketplace: el mod se cargaría dos veces.
 
 Las opciones de cada mod se cambian desde `/config`.
 

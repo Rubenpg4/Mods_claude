@@ -1,7 +1,8 @@
 {
   "name": "contexto-vivo",
   "version": "0.7.0",
-  "description": "Ventana de contexto en directo: panel con reparto navegable, diagnóstico con pruebas que se resuelve en un chat aparte con Sonnet, tendencia, subagentes, llamadas y árbol de checkpoints que restaura y bifurca como rewind, con comparación, búsqueda y exportación; cifra en la fila del modo, /contexto-top y /cp",
+  "author": { "name": "Rubén Prieto García" },
+  "description": "Ventana de contexto en directo: panel con reparto navegable, diagnóstico con pruebas que se resuelve en un chat aparte (Sonnet u Opus, en modo plan), tendencia, subagentes, llamadas y árbol de checkpoints que restaura y bifurca como rewind, con comparación, búsqueda y exportación; cifra en la fila del modo, /contexto-top y /cp",
   "types": "./types/index.d.ts",
   "userConfig": {
     "avisoPorcentaje": {

@@ -1,0 +1,14 @@
+{
+  "name": "mods-claude",
+  "owner": {
+    "name": "Rubén Prieto García"
+  },
+  "description": "Mods de Claude Code en español",
+  "plugins": [
+    {
+      "name": "contexto-vivo",
+      "source": "./mods/contexto-vivo",
+      "description": "Ventana de contexto en directo, diagnóstico de malos usos resuelto con IA, selector de modelo y esfuerzo, y árbol de checkpoints"
+    }
+  ]
+}

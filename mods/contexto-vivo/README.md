@@ -65,7 +65,11 @@ El índice del árbol vive en `~/.claude/contexto-vivo/ramas/<proyecto>/indice.j
 
 ## Instalación
 
-Copia o enlaza la carpeta en `~/.claude/mods/` y reinicia Claude Code (instrucciones completas en el [README del repositorio](../../README.md#instalación)). Hace falta `node` en el `PATH` para el árbol de checkpoints.
+```
+/plugin install contexto-vivo --marketplace Rubenpg4/Mods_claude
+```
+
+O `claude plugin install contexto-vivo --marketplace Rubenpg4/Mods_claude` desde una consola. Hace falta Claude Code 2.1.319 o posterior, y `node` en el `PATH` para el árbol de checkpoints; «resolver con IA» abre PowerShell 7 (`pwsh`) en Windows Terminal. Para desarrollarlo desde una copia local, ver el [README del repositorio](../../README.md#instalación).
 
 ## Datos que guarda
 
