@@ -1,6 +1,6 @@
 import { atom, type EngineInterface, read, update } from 'claude-code'
 
-import type { Aviso, Foto, Limite, Llamada, Seguimiento, Subagente, Total, Turno } from '../../types'
+import type { Aviso, Foto, Limite, Llamada, Rotura, Seguimiento, Subagente, Total, Turno } from '../../types'
 
 // Estado de la medición: llamadas, cifra total, límites de uso, foto de
 // /context, aviso de umbral, turnos, subagentes, hallazgos ignorados, último
@@ -14,7 +14,8 @@ type Cambio<T> = (valor: T) => T
 // Todo el acceso pasa por las funciones de abajo: el validador exige que cada
 // lectura y escritura esté en el mismo fichero que su átomo.
 const llamadas = atom({ plugin: 'contexto-vivo', key: 'llamadas' } as const, [], {
-  shape: 'llamadas-2',
+  // -3: turno, hora y líneas pedidas (desde/cuantas) de cada llamada.
+  shape: 'llamadas-3',
 })
 const total = atom({ plugin: 'contexto-vivo', key: 'total' } as const, null, {
   // -5: los límites de uso pasan a su propio valor.
@@ -37,6 +38,9 @@ const historial = atom({ plugin: 'contexto-vivo', key: 'historial' } as const, [
 })
 const subagentes = atom({ plugin: 'contexto-vivo', key: 'subagentes' } as const, [], {
   shape: 'subagentes-1',
+})
+const roturas = atom({ plugin: 'contexto-vivo', key: 'roturas' } as const, [], {
+  shape: 'roturas-1',
 })
 const ignorados = atom({ plugin: 'contexto-vivo', key: 'ignorados' } as const, [], {
   shape: 'ignorados-1',
@@ -109,6 +113,13 @@ export function leerSubagentes($: $) {
 }
 export function cambiarSubagentes($: $, f: Cambio<Subagente[]>) {
   return update($, subagentes, f)
+}
+
+export function leerRoturas($: $) {
+  return read($, roturas)
+}
+export function cambiarRoturas($: $, f: Cambio<Rotura[]>) {
+  return update($, roturas, f)
 }
 
 export function leerIgnorados($: $) {

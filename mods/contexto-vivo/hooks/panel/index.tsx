@@ -10,7 +10,16 @@ import { horaVisible } from '../contexto/limites'
 import { quesitos } from '../contexto/reparto'
 import { tendencia } from '../contexto/tendencia'
 import { leerArbol } from '../estado/arbol'
-import { leerFoto, leerHistorial, leerIgnorados, leerLlamadas, leerSeguimiento, leerSubagentes, leerTotal } from '../estado/contexto'
+import {
+  leerFoto,
+  leerHistorial,
+  leerIgnorados,
+  leerLlamadas,
+  leerRoturas,
+  leerSeguimiento,
+  leerSubagentes,
+  leerTotal,
+} from '../estado/contexto'
 import { cambiarPestana, leerConfirmar, leerPestana } from '../estado/panel'
 import { sinResolver } from '../ia/informe'
 import { selectorEnPanel } from '../selector/banda'
@@ -61,7 +70,7 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
   const color = colorNivel(porcentaje, cfg)
   const qs = quesitos(f, lista)
   const sumaQs = qs.reduce((s, q) => s + q.tokens, 0)
-  const hallazgos = diagnosticar(f, lista, cfg, omitidos)
+  const hallazgos = diagnosticar(f, lista, cfg, omitidos, { turnos, subagentes: agentes, total: t, roturas: await leerRoturas($) })
   // Los resueltos con IA (o a mano) no cuentan como avisos.
   const pendientes = sinResolver(hallazgos, seguimiento).length
   const ritmo = tendencia(turnos, f, t)

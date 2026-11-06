@@ -35,6 +35,7 @@ import {
   leerHistorial,
   leerIgnorados,
   leerLlamadas,
+  leerRoturas,
   leerSeguimiento,
   leerSubagentes,
   leerTotal,
@@ -153,6 +154,7 @@ export const register: Register = (on, opciones) => {
         // Los resueltos con IA (o a mano) no salen como avisos.
         [...(await leerIgnorados($)), ...(await leerSeguimiento($)).filter(s => s.resuelto !== undefined).map(s => s.clave)],
         await leerTotal($),
+        await leerRoturas($),
       ),
     )
 
@@ -414,8 +416,10 @@ export const register: Register = (on, opciones) => {
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const f = await leerFoto($)
     const t = await leerTotal($)
-    const avisos = sinResolver(diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($)), await leerSeguimiento($)).length
-    const turnos = tendencia(await leerHistorial($), f, t).turnosRestantes
+    const historial = await leerHistorial($)
+    const entorno = { turnos: historial, subagentes: await leerSubagentes($), total: t, roturas: await leerRoturas($) }
+    const avisos = sinResolver(diagnosticar(f, await leerLlamadas($), cfg, await leerIgnorados($), entorno), await leerSeguimiento($)).length
+    const turnos = tendencia(historial, f, t).turnosRestantes
     const cola = pie(t, await limitesVisibles($), turnos, avisos, await horaVisible($))
     // Modelo y esfuerzo al final de la fila: el modelo de la sesión tal como lo
     // muestra /model (se lee en cada dibujo, no queda viejo), o el de la última

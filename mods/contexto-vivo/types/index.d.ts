@@ -13,6 +13,26 @@ export type Llamada = {
   // devolvió: las pruebas que lleva el informe de un hallazgo.
   entrada?: string
   muestra?: string
+  // Turno de la conversación en que llegó (el que cerrará como `n`) y hora.
+  turno?: number
+  hora?: number
+  // Las líneas pedidas de una lectura parcial (offset/limit del Read).
+  desde?: number
+  cuantas?: number
+}
+
+// Una petición que tuvo que reescribir la caché que antes servía: hora, turno,
+// tokens reescritos, caché antes y después, la pausa desde la respuesta
+// anterior y el modelo antes y ahora (si cambió, la caché no sirve).
+export type Rotura = {
+  hora: number
+  turno: number
+  reescritos: number
+  antes: number
+  despues: number
+  pausa?: number
+  modeloAntes?: string
+  modelo?: string
 }
 
 // Una porción del gráfico de quesitos; `rgb` es 0xRRGGBB.
@@ -33,7 +53,21 @@ export type Seguimiento = {
 }
 
 // Las clases de mal uso que detecta el diagnóstico.
-export type TipoHallazgo = 'relectura' | 'lectura' | 'bash' | 'mcp' | 'subagente' | 'otra' | 'memoria' | 'mcp-cargado'
+export type TipoHallazgo =
+  | 'relectura'
+  | 'lectura'
+  | 'bash'
+  | 'mcp'
+  | 'subagente'
+  | 'busqueda'
+  | 'otra'
+  | 'repetida'
+  | 'exploracion'
+  | 'memoria'
+  | 'mcp-cargado'
+  | 'cache'
+  | 'subagente-lleno'
+  | 'ritmo'
 
 // Un mal uso del contexto detectado, con lo que cuesta y cómo evitarlo.
 // `clave` lo identifica para ignorarlo; `ruta`, el fichero que se puede abrir;
@@ -51,6 +85,8 @@ export type Hallazgo = {
   pruebas: string[]
   // El comienzo de lo que devolvió la llamada, tal cual.
   muestra?: string
+  // Cuántas veces se ha dado el mismo patrón (llamadas, lecturas, turnos…).
+  veces?: number
 }
 
 // Una fila del desglose (categoría, fichero de memoria, servidor MCP, skill);
@@ -222,6 +258,8 @@ declare module 'claude-code' {
       pestana: Shaped<Pestana>
       historial: Shaped<Turno[]>
       subagentes: Shaped<Subagente[]>
+      // Las veces que la caché se invalidó en esta conversación.
+      roturas: Shaped<Rotura[]>
       // Claves de los hallazgos ignorados (copia de lo guardado en $.store).
       ignorados: Shaped<string[]>
       // Hallazgos de este proyecto llevados a la IA, en curso o resueltos

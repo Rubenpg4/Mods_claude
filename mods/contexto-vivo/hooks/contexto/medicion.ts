@@ -1,6 +1,6 @@
 import type { EngineInterface, ModelUsage } from 'claude-code'
 
-import type { Foto, Llamada, Total } from '../../types'
+import type { Foto, Llamada, Rotura, Total } from '../../types'
 
 import { sector } from '../comun/barras'
 import { CARACTERES_POR_TOKEN, corta, enLinea, etiquetar, k, nombreHerramienta, ordenar } from '../comun/formato'
@@ -10,15 +10,18 @@ import {
   cambiarFoto,
   cambiarHistorial,
   cambiarLlamadas,
+  cambiarRoturas,
   cambiarSubagentes,
   cambiarTotal,
   leerAviso,
+  leerHistorial,
   leerLlamadas,
   leerSubagentes,
   leerTotal,
   leerUltimoPrompt,
 } from '../estado/contexto'
 import { cambiarConfirmar, cambiarMensajes, leerConservar } from '../estado/panel'
+import { leerAplicado } from '../estado/selector'
 import { apuntarLimites, marcarHora } from './limites'
 import { CATEGORIAS } from './reparto'
 
@@ -27,7 +30,17 @@ import { CATEGORIAS } from './reparto'
 // herramienta, cada turno y cada subagente; compactar y olvidar la conversación.
 
 // Tras compactar, la primera petición reescribe la caché por fuerza: no avisar.
-const marcas = { recienCompactado: false }
+// La hora y el modelo de la última respuesta, para explicar una caché rota.
+const marcas: { recienCompactado: boolean; hora: number | null; modelo: string | null } = {
+  recienCompactado: false,
+  hora: null,
+  modelo: null,
+}
+
+// El turno en curso: el siguiente al último que se cerró.
+async function turnoActual($: EngineInterface): Promise<number> {
+  return ((await leerHistorial($)).at(-1)?.n ?? 0) + 1
+}
 
 function tokensDe(usage: ModelUsage): number {
   return usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens
@@ -63,9 +76,24 @@ export async function refrescar($: EngineInterface, cfg: Config, usage: ModelUsa
       cache < 50 &&
       ahora.cacheEscrito >= 20000
     marcas.recienCompactado = false
-    if (invalidada && cfg.emergentes) {
-      $.ui.toast(`⟲ Caché invalidada: se reescribieron ≈${k(ahora.cacheEscrito)} tokens (caché ${cache} %)`)
+    const [hora, modelo] = await Promise.all([$.clock.now(), leerAplicado($).then(a => a.modelo)])
+    if (invalidada && cache !== null) {
+      // Se apunta para el diagnóstico, con lo que ayuda a explicarla.
+      const rotura: Rotura = {
+        hora,
+        turno: await turnoActual($),
+        reescritos: ahora.cacheEscrito,
+        antes: anterior?.cache ?? 0,
+        despues: cache,
+        ...(marcas.hora === null ? {} : { pausa: hora - marcas.hora }),
+        ...(marcas.modelo === null ? {} : { modeloAntes: marcas.modelo }),
+        ...(modelo === null ? {} : { modelo }),
+      }
+      await cambiarRoturas($, lista => [...lista.slice(-19), rotura])
+      if (cfg.emergentes) $.ui.toast(`⟲ Caché invalidada: se reescribieron ≈${k(ahora.cacheEscrito)} tokens (caché ${cache} %)`)
     }
+    marcas.hora = hora
+    marcas.modelo = modelo
   }
 
   const previo = await leerAviso($)
@@ -154,6 +182,7 @@ export async function registrarLlamada(
 ): Promise<void> {
   const ruta = typeof entrada.file_path === 'string' ? entrada.file_path : undefined
   const tokens = Math.ceil(texto.length / CARACTERES_POR_TOKEN)
+  const [turno, hora] = await Promise.all([turnoActual($), $.clock.now()])
   const lista: Llamada[] = await cambiarLlamadas($, previa => [
     ...previa.slice(-299),
     {
@@ -164,6 +193,10 @@ export async function registrarLlamada(
       tokens,
       ruta,
       parcial: entrada.offset !== undefined || entrada.limit !== undefined,
+      ...(typeof entrada.offset === 'number' ? { desde: entrada.offset } : {}),
+      ...(typeof entrada.limit === 'number' ? { cuantas: entrada.limit } : {}),
+      turno,
+      hora,
       entrada: resumirEntrada(entrada),
       // De una lectura basta la ruta: el fichero se puede volver a abrir.
       muestra: herramienta === 'Read' || texto.trim() === '' ? undefined : texto.slice(0, LARGO_MUESTRA),
@@ -225,6 +258,7 @@ export async function terminarSubagente($: EngineInterface, agentId: string): Pr
 
 export async function reiniciar($: EngineInterface): Promise<void> {
   await cambiarLlamadas($, () => [])
+  await cambiarRoturas($, () => [])
   await cambiarAviso($, () => ({ nivel: 0, desde: 0 }))
   await cambiarTotal($, () => null)
   await cambiarConfirmar($, () => false)

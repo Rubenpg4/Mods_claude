@@ -1,4 +1,4 @@
-import type { Fila, Foto, Limite, Llamada, Subagente, Total, Turno } from '../../types'
+import type { Fila, Foto, Limite, Llamada, Rotura, Subagente, Total, Turno } from '../../types'
 
 import { barraFina, chispa, sector, segmentos } from '../comun/barras'
 import { duracionCorta, k, nombreHerramienta, ordenar } from '../comun/formato'
@@ -39,6 +39,7 @@ export function informe(
   cfg: Config,
   ignorados: string[],
   t: Total | null,
+  roturas: Rotura[] = [],
 ): string {
   const lineas: string[] = []
   const filas = (titulo: string, datos: Fila[]) => {
@@ -73,7 +74,7 @@ export function informe(
       lineas.push(`  ${a.activo ? '●' : '○'} ${a.tipo.padEnd(18)} ${k(a.tokens).padStart(6)}  ${a.descripcion.slice(0, 50)}`)
     }
   }
-  const hallazgos = diagnosticar(f, lista, cfg, ignorados)
+  const hallazgos = diagnosticar(f, lista, cfg, ignorados, { turnos, subagentes: agentes, total: t, roturas })
   if (hallazgos.length > 0) {
     lineas.push('', 'Diagnóstico')
     for (const hallazgo of hallazgos.slice(0, 8)) {

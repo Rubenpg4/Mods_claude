@@ -87,7 +87,7 @@ mods/contexto-vivo/
 | `contexto/medicion.ts` | `refrescar` (cifra, caché y avisos tras cada respuesta), `fotografiar` (desglose de `/context`), `registrarLlamada`, `registrarTurno`, `registrarPaso` y `terminarSubagente` (subagentes), `compactar`, `olvidarConversacion` | |
 | `contexto/limites.ts` | Ventanas de uso 5h/7d: lectura del motor, copia en `$.store`, ritmo y cuenta atrás | parte |
 | `contexto/reparto.ts` | `quesitos` (porciones) y `entradas` (cada nivel del anillo) | ✔ |
-| `contexto/diagnostico.ts` | `diagnosticar`: los malos usos con sus pruebas | ✔ |
+| `contexto/diagnostico.ts` | `diagnosticar`: los malos usos con sus pruebas, agrupados por patrón; `patronComando`, `argumento` | ✔ |
 | `contexto/tendencia.ts` | Crecimiento por turno y turnos hasta compactar | ✔ |
 | `contexto/informes.ts` | `pie` (cola de la fila) e `informe` (`/contexto-top`) | ✔ |
 | `contexto/ignorados.ts` | Hallazgos ignorados, guardados en `$.store` | |
@@ -120,13 +120,14 @@ Cada átomo está en el mismo fichero que sus `leer…`/`cambiar…`. `leer…` 
 
 | Átomo | `shape` | Fichero | Contiene | Lo escribe | Lo lee |
 |-------|---------|---------|----------|------------|--------|
-| `llamadas` | llamadas-2 | estado/contexto | Últimas 300 llamadas a herramientas | `registrarLlamada`, `reiniciar` | fila, panel, `/contexto-top` |
+| `llamadas` | llamadas-3 | estado/contexto | Últimas 300 llamadas a herramientas, con turno, hora y líneas pedidas (`desde`/`cuantas`) | `registrarLlamada`, `reiniciar` | fila, panel, `/contexto-top` |
 | `total` | total-5 | estado/contexto | Ocupación y caché de la última respuesta | `refrescar`, `reiniciar` | fila, panel, checkpoints |
 | `limites` | limites-1 | estado/contexto | Ventanas de uso (también en `$.store`) | `apuntarLimites`, `cargarLimites` | fila, panel |
 | `foto` | foto-3 | estado/contexto | Desglose de `/context` | `fotografiar`, `olvidarConversacion` | fila, panel |
 | `aviso` | aviso-1 | estado/contexto | Último umbral avisado | `refrescar`, `reiniciar` | `refrescar` |
 | `historial` | historial-1 | estado/contexto | Últimos 120 turnos | `registrarTurno` | panel, fila |
 | `subagentes` | subagentes-1 | estado/contexto | Últimos 12 subagentes | `registrarPaso`, `terminarSubagente` | panel |
+| `roturas` | roturas-1 | estado/contexto | Últimas 20 cachés invalidadas: turno, tokens reescritos, pausa y modelo antes y después | `refrescar`, `reiniciar` | diagnóstico |
 | `ignorados` | ignorados-1 | estado/contexto | Claves ignoradas (copia de `$.store`) | `ignorar`, `cargarIgnorados` | diagnóstico |
 | `seguimiento` | seguimiento-1 | estado/contexto | Hallazgos de este proyecto llevados a la IA, en curso o resueltos (copia de `$.store`) | `resolverConIA`, `comprobarResueltos`, `marcarResuelto`, `reabrir`, `cargarSeguimiento` | diagnóstico, fila, `/contexto-top` |
 | `ultimoPrompt` | prompt-1 | estado/contexto | Texto del último prompt | `prompt.submit` | `registrarTurno` |
@@ -157,7 +158,7 @@ Cada átomo está en el mismo fichero que sus `leer…`/`cambiar…`. `leer…` 
 |----------|---------|----------|
 | `cola` | arbol/disco.ts | Serializa las operaciones sobre el índice |
 | `vigia`, `visto`, `mirando` | arbol/rewind.ts | Temporizador del vigía y lo último que vio |
-| `marcas` | contexto/medicion.ts | Tras compactar no se avisa de que la caché se invalidó |
+| `marcas` | contexto/medicion.ts | Tras compactar no se avisa de que la caché se invalidó; hora y modelo de la última respuesta, para explicar una caché rota |
 | `turno`, `propios` | selector/aplicar.ts | Si hay turno en marcha; comandos lanzados por el mod |
 | `tic` | register.tsx | Temporizador de cada minuto |
 | `sondeo` | ia/lanzar.ts | Lee cada 10 s los informes en curso, solo mientras haya alguno |
@@ -234,18 +235,30 @@ Va en un proceso aparte con `node` porque `$.fs.read` no lee más de 4 MiB y los
 
 ## 6. Diagnóstico y resolución con IA
 
-`diagnosticar(foto, llamadas, cfg, ignorados)` es puro. Los tokens se estiman a 3,5 caracteres por token.
+`diagnosticar(foto, llamadas, cfg, ignorados, entorno)` es puro; `entorno` trae turnos, subagentes, la cifra total y las cachés rotas (`roturas`). Los tokens se estiman a 3,5 caracteres por token.
+
+Las claves van **por patrón**, no por llamada (`bash:git log`, `lectura:<ruta>`, `mcp:<herramienta>`, `subagente-lleno:<tipo>`): el mismo mal uso repetido es un solo hallazgo con `veces` y la suma de tokens, y si vuelve después de resolverse se reconoce como el mismo.
 
 | Tipo | Cuándo | Gravedad alta |
 |------|--------|---------------|
-| `relectura` | El mismo fichero leído 2 o más veces | 3 o más lecturas |
-| `lectura` | `Read` entero (sin offset/limit) ≥ `lectura`, si no es una relectura | ≥ `golpe` |
-| `bash` | Salida de Bash, PowerShell o Monitor ≥ `bash` | ≥ `golpe` |
-| `mcp` | Respuesta MCP ≥ `mcp` | ≥ `golpe` |
-| `subagente` | Informe de subagente ≥ `subagente` | ≥ `golpe` |
-| `otra` | Cualquier otra herramienta ≥ `otra` | ≥ `golpe` |
+| `relectura` | Una lectura trae líneas que ya trajo otra del mismo fichero **sin edición entre medias** (rangos de `offset`/`limit` que se solapan; entera = todo) | 2 o más lecturas que sobran, o ≥ `golpe` |
+| `repetida` | La misma llamada (no `Read`) con los mismos argumentos y el mismo resultado (tamaño y comienzo), si lo repetido suma ≥ `MINIMO_REPETIDA` (1 000) | 3 o más veces, o ≥ `golpe` |
+| `lectura` | `Read` entero ≥ `lectura`, si no es una relectura; agrupado por fichero | ≥ `golpe` o 3 o más |
+| `bash` | Salida de Bash, PowerShell o Monitor ≥ `bash`; agrupado por programa y subcomando (`patronComando`) | ≥ `golpe` o 3 o más |
+| `mcp` | Respuesta MCP ≥ `mcp`; agrupado por herramienta | ≥ `golpe` o 3 o más |
+| `subagente` | Informe de subagente ≥ `subagente`; agrupado por `subagent_type` | ≥ `golpe` o 3 o más |
+| `busqueda` | Grep o Glob ≥ `otra` (un Grep `content` sin `head_limit`, ya desde `otra` / 2) | ≥ `golpe` o 3 o más |
+| `otra` | Cualquier otra herramienta ≥ `otra` | ≥ `golpe` o 3 o más |
+| `exploracion` | En un turno, ≥ 10 lecturas y búsquedas sobre ≥ 6 ficheros y ≥ 2 × `lectura` (`EXPLORACION`) | un turno ≥ `golpe` |
+| `cache` | La caché se invalidó (`roturas`); da la causa probable: cambio de modelo, pausa ≥ 5 min u otra | 2 o más, o ≥ 2 × `golpe` |
+| `subagente-lleno` | Pico de un subagente ≥ 70 % de la ventana principal (`SUBAGENTE_LLENO`) | ≥ `critico` % |
+| `ritmo` | Un turno añade ≥ 15 % de la ventana (`TURNO_GRANDE`); lleva su prompt y sus llamadas más pesadas | quedan ≤ 3 turnos o un turno ≥ 25 % |
 | `memoria` | Fichero de memoria ≥ `memoria` | ≥ 2 × `memoria` |
 | `mcp-cargado` | Esquemas MCP cargados ≥ `mcpCargado` | nunca |
+
+Una llamada que repite otra con el mismo resultado no cuenta además en su grupo de resultados grandes, y un fichero con relectura no sale además como `lectura`.
+
+`refrescar` apunta cada caché rota en `roturas` (también sin avisos emergentes), con la pausa desde la respuesta anterior y el modelo antes y después (`marcas.hora`, `marcas.modelo`). `registrarLlamada` apunta el turno en curso (el último del historial + 1), la hora y las líneas pedidas.
 
 Cada hallazgo lleva `pruebas` (llamadas, argumentos, tamaños) y, si hay, `muestra` (comienzo del resultado). **Resolver con IA** (`ia/lanzar.ts`):
 
@@ -303,6 +316,7 @@ Para añadir una opción: declárala en `userConfig`, añádela a `Config` y a `
 | el texto de la conversación… | `enLinea` |
 | la respuesta del motor a una interrupción… | `soloRuido` |
 | el informe para la IA… | `informeIA`, `tituloIA`, `ficheroIA`, `resumirEntrada` |
+| el diagnóstico distingue… | Relecturas justificadas y solapes, `repetida`, agrupación por patrón (`patronComando`), `busqueda`, `exploracion`, `cache`, `subagente-lleno`, `ritmo` |
 | la sesión aparte se abre en PowerShell 7… | `lanzadoresIA`, `ordenPwsh`, `codificarPwsh` |
 
 ## 9. Reglas del motor, problemas conocidos y decisiones

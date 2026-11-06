@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Llamada } from '../types'
 
 import { corteDeRewind, NOTA_FICHEROS, pasos, soloRuido } from '../hooks/arbol/mensajes'
 import {
@@ -14,7 +15,7 @@ import {
 } from '../hooks/arbol/modelo'
 import { VIGIA_MS } from '../hooks/arbol/rewind'
 import { enLinea } from '../hooks/comun/formato'
-import { diagnosticar } from '../hooks/contexto/diagnostico'
+import { diagnosticar, patronComando } from '../hooks/contexto/diagnostico'
 import { resumirEntrada } from '../hooks/contexto/medicion'
 import { ficheroIA, informeIA, MARCA_RESUELTO, resolucionIA, sinResolver, tituloIA } from '../hooks/ia/informe'
 import { codificarPwsh, lanzadoresIA, ordenPwsh, SONDEO_MS } from '../hooks/ia/lanzar'
@@ -296,8 +297,8 @@ test('el mod entero: llamadas, turnos, subagentes, pestañas, diagnóstico y com
   expect(rutaInforme).toMatch(/\/contexto-vivo\/informes\/-repo\/20261105120\d+-relectura-C-repo-docs-plan-md\.md$/)
   expect(informe).toContain('# Problema de contexto: docs/plan.md leído 2 veces')
   expect(informe).toContain('- Fichero: C:/repo/docs/plan.md')
-  expect(informe).toContain('Lectura #1: entera')
-  expect(informe).toContain('Lectura #2: entera')
+  expect(informe).toContain('Lectura #1 (turno 2): entera')
+  expect(informe).toContain('Lectura #2 (turno 2): entera')
   expect(informe).toContain('## Lo que te pido')
   const terminal = lanzados.at(-1) ?? []
   expect(terminal.slice(0, -1)).toEqual(['wt.exe', '-w', '0', 'new-tab', '-d', '/repo', 'pwsh', '-NoLogo', '-NoExit', '-EncodedCommand'])
@@ -1516,9 +1517,11 @@ test('el informe para la IA recoge argumentos, resultado y encargo de cada halla
     'Filtrado con --oneline. Y una regla en CLAUDE.md.',
   )
   expect(resolucionIA('## resuelto:\r\n')).toBe('')
-  expect(sinResolver([h], [{ clave: 'bash:b1', proyecto: 'C:/repo', texto: '', informe: '', abierto: 0 }])).toEqual([h])
-  expect(sinResolver([h], [{ clave: 'bash:b1', proyecto: 'C:/repo', texto: '', informe: '', abierto: 0, resuelto: 1 }])).toEqual([])
-  expect(ficheroIA(h, '2026-11-06 10:00:00')).toBe('20261106100000-bash-b1.md')
+  // La clave va por patrón (el comando), no por llamada.
+  expect(h.clave).toBe('bash:git log')
+  expect(sinResolver([h], [{ clave: 'bash:git log', proyecto: 'C:/repo', texto: '', informe: '', abierto: 0 }])).toEqual([h])
+  expect(sinResolver([h], [{ clave: 'bash:git log', proyecto: 'C:/repo', texto: '', informe: '', abierto: 0, resuelto: 1 }])).toEqual([])
+  expect(ficheroIA(h, '2026-11-06 10:00:00')).toBe('20261106100000-bash-git-log.md')
   expect(resumirEntrada({ tool: 'Read', tool_use_id: 'x' })).toBeUndefined()
   expect(resumirEntrada({ command: 'x'.repeat(1000) })?.length).toBe(401)
 
@@ -1535,6 +1538,90 @@ test('el informe para la IA recoge argumentos, resultado y encargo de cada halla
   const [mcp] = diagnosticar(foto, [], cfg, [])
   expect(mcp?.pruebas).toContain('Servidor Notion: ≈18k (2 herramientas)')
   expect(mcp?.pruebas.at(-1)).toBe('Las más pesadas: Notion·fetch ≈9.0k, Notion·search ≈9.0k, Slack·send ≈6.0k')
+})
+
+test('el diagnóstico distingue relecturas justificadas, repeticiones, patrones, exploración, caché, subagentes y turnos', () => {
+  const cfg = leerConfig({})
+  let orden = 0
+  const ll = (herramienta: string, tokens: number, extra: Partial<Llamada> = {}): Llamada => {
+    orden += 1
+    return { id: `l${orden}`, orden, herramienta, etiqueta: String(extra.etiqueta ?? herramienta), tokens, turno: 1, ...extra }
+  }
+  const tipos = (hs: { tipo: string }[]) => hs.map(h => h.tipo).sort()
+
+  // Releer tras editar, o leer otra parte del fichero, no es una relectura.
+  const justificadas = [
+    ll('Read', 300, { ruta: 'C:/r/a.ts' }),
+    ll('Edit', 10, { ruta: 'C:/r/a.ts' }),
+    ll('Read', 300, { ruta: 'C:/r/a.ts' }),
+    ll('Read', 300, { ruta: 'C:/r/b.md', parcial: true, desde: 1, cuantas: 100 }),
+    ll('Read', 300, { ruta: 'C:/r/b.md', parcial: true, desde: 200, cuantas: 100 }),
+  ]
+  expect(diagnosticar(null, justificadas, cfg, [])).toEqual([])
+  // Un tramo que se solapa con otro ya leído sí lo es.
+  const [solape] = diagnosticar(null, [...justificadas, ll('Read', 300, { ruta: 'C:/r/b.md', parcial: true, desde: 50, cuantas: 20 })], cfg, [])
+  expect(solape?.clave).toBe('relectura:C:/r/b.md')
+  expect(solape?.tokens).toBe(300)
+  expect(solape?.pruebas).toContain('Lectura #6 (turno 1): líneas 50–69 · ≈300 · repite lo ya leído')
+
+  // La misma orden con el mismo resultado; y salidas grandes del mismo patrón,
+  // agrupadas en un hallazgo.
+  expect(patronComando('cd C:/r && git log --stat | head')).toBe('git log')
+  expect(patronComando('FOO=1 ls -la src')).toBe('ls')
+  const salida = { entrada: '{"command":"npm test"}', muestra: 'PASS' }
+  const bash = [
+    ll('Bash', 800, salida),
+    ll('Bash', 800, salida),
+    ll('Bash', 800, salida),
+    ll('Bash', 6000, { entrada: '{"command":"git log --stat"}', etiqueta: 'git log --stat' }),
+    ll('Bash', 7000, { entrada: '{"command":"cd x && git log -p"}', etiqueta: 'git log -p' }),
+  ]
+  const hs = diagnosticar(null, bash, cfg, [])
+  expect(tipos(hs)).toEqual(['bash', 'repetida'])
+  const repetida = hs.find(h => h.tipo === 'repetida')
+  expect(repetida?.clave).toBe('repetida:Bash:npm test')
+  expect(repetida?.veces).toBe(3)
+  expect(repetida?.tokens).toBe(1600)
+  const git = hs.find(h => h.tipo === 'bash')
+  expect(git?.clave).toBe('bash:git log')
+  expect(git?.texto).toBe('2 salidas grandes de «git log»')
+  expect(git?.tokens).toBe(13000)
+
+  // Un Grep que vuelca contenido sin head_limit se señala antes que otro.
+  const grep = ll('Grep', 5000, { entrada: '{"pattern":"x","output_mode":"content"}' })
+  const [busqueda] = diagnosticar(null, [grep], cfg, [])
+  expect(busqueda?.tipo).toBe('busqueda')
+  expect(busqueda?.consejo).toContain('head_limit')
+  expect(diagnosticar(null, [{ ...grep, entrada: '{"pattern":"x","output_mode":"content","head_limit":50}' }], cfg, [])).toEqual([])
+
+  // Muchas lecturas de ficheros distintos en un turno: exploración.
+  const explorar = Array.from({ length: 10 }, (_, i) => ll('Read', 1300, { ruta: `C:/r/f${i}.ts`, turno: 4 }))
+  const turnos = [{ n: 4, tokens: 60000, porcentaje: 30, delta: 13000, prompt: 'cómo funciona el árbol', cache: 90 }]
+  const [exp] = diagnosticar(null, explorar, cfg, [], { turnos })
+  expect(exp?.tipo).toBe('exploracion')
+  expect(exp?.pruebas[0]).toBe('Turno 4 («cómo funciona el árbol»): 10 lecturas y búsquedas sobre 10 ficheros, ≈13k tokens')
+
+  // La caché rota tras cambiar de modelo, un subagente casi lleno y un turno
+  // que dispara el contexto.
+  const total = { tokens: 150000, ventana: 200000, porcentaje: 75, cache: 20, cacheEscrito: 90000 }
+  const entorno = {
+    total,
+    roturas: [{ hora: 0, turno: 3, reescritos: 90000, antes: 95, despues: 20, pausa: 60000, modeloAntes: 'opus', modelo: 'sonnet' }],
+    subagentes: [{ id: 'a', tipo: 'Explore', descripcion: 'Busca usos', tokens: 150000, pico: 180000, pasos: 9, activo: false }],
+    turnos: [
+      { n: 1, tokens: 40000, porcentaje: 20, delta: 0, prompt: '', cache: null },
+      { n: 2, tokens: 100000, porcentaje: 50, delta: 60000, prompt: 'revisa todo el repo', cache: 90 },
+    ],
+  }
+  const otros = diagnosticar(null, [ll('Bash', 900, { turno: 2, etiqueta: 'ls' })], cfg, [], entorno)
+  expect(tipos(otros)).toEqual(['cache', 'ritmo', 'subagente-lleno'])
+  const cache = otros.find(h => h.tipo === 'cache')
+  expect(cache?.consejo).toContain('no cambies de modelo')
+  expect(cache?.pruebas[0]).toBe('Turno 3: caché del 95 % al 20 %, ≈90k tokens reescritos · 1 min desde la respuesta anterior · cambio de modelo opus → sonnet')
+  expect(otros.find(h => h.tipo === 'subagente-lleno')?.gravedad).toBe('alta')
+  const ritmo = otros.find(h => h.tipo === 'ritmo')
+  expect(ritmo?.texto).toBe('El turno 2 añadió ≈60k (30 %)')
+  expect(ritmo?.pruebas).toContain('  Lo que más pesó en él: Bash ls ≈900')
 })
 
 test('la sesión aparte se abre en una pestaña de PowerShell 7, con cmd si no hay Windows Terminal', () => {

@@ -23,6 +23,18 @@ const ENCARGOS: Record<TipoHallazgo, string> = {
     'Una herramienta MCP ha devuelto una respuesta muy grande. Según sus argumentos y el comienzo de la respuesta, propón cómo pedir menos: paginación, límites, filtros o solo los campos necesarios. Si conviene, redacta una regla para CLAUDE.md con la forma correcta de llamarla.',
   subagente:
     'Un subagente ha devuelto un informe muy largo que entra entero en la conversación principal. Reescribe el encargo para que devuelva solo la conclusión (con un formato y una extensión máximos) y, si es un tipo de agente propio, propón el cambio en su definición.',
+  busqueda:
+    'Una búsqueda (Grep o Glob) ha devuelto un resultado enorme. Propón la forma acotada de la misma búsqueda (files_with_matches o count, head_limit, path, glob o type) y, si se repite, una regla en CLAUDE.md para buscar así.',
+  repetida:
+    'La misma llamada, con los mismos argumentos, se ha hecho varias veces y ha devuelto lo mismo. Averigua por qué se repitió (¿se perdió el resultado?, ¿una instrucción la pide en cada paso?) y propón cómo evitarlo.',
+  exploracion:
+    'La conversación principal ha leído y buscado en muchos ficheros en un mismo turno. Propón cómo delegar esa exploración en un subagente que devuelva solo la conclusión, o qué índice o documentación evitaría tener que explorar.',
+  cache:
+    'La caché de la conversación se ha invalidado y se reescribieron muchos tokens. Según las pruebas (pausas, cambios de modelo), explica la causa más probable y propón cómo evitarla.',
+  'subagente-lleno':
+    'Un subagente ha llenado buena parte de su propia ventana. Revisa su encargo o su definición y propón cómo dividir el trabajo o hacer que lea menos.',
+  ritmo:
+    'Un turno ha hecho crecer el contexto de golpe. Según su prompt y las llamadas que más pesaron, propón cómo partir ese tipo de tarea o acotarla.',
   otra:
     'Una herramienta ha devuelto un resultado muy grande. Propón cómo acotar la llamada (rutas, patrones, límites de resultados) y, si se repite, una regla en CLAUDE.md para hacerlo así siempre.',
   memoria:
