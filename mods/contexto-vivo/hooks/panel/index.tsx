@@ -20,7 +20,7 @@ import {
   leerSubagentes,
   leerTotal,
 } from '../estado/contexto'
-import { cambiarPestana, leerConfirmar, leerPestana } from '../estado/panel'
+import { cambiarPestana, leerConfirmar, leerPestana, PANEL } from '../estado/panel'
 import { sinResolver } from '../ia/informe'
 import { selectorEnPanel } from '../selector/banda'
 import { cabecera as dibujarCabecera, limitesUso as dibujarLimites } from './cabecera'
@@ -46,6 +46,19 @@ const PESTANAS: [Pestana, string][] = [
   ['llamadas', '≡ Llamadas'],
   ['arbol', '⎇ Árbol'],
 ]
+// Abre el panel. Con el renderizador clásico (sin pantalla completa) el motor
+// lo pone encima del prompt y el terminal no manda clics: se abre con el
+// teclado para que Tab, Enter y las flechas funcionen desde el principio.
+// `pantallaCompleta` es `presentation.isFullscreen` del `command.run`.
+export async function abrirPanel($: EngineInterface, pantallaCompleta: boolean | undefined): Promise<boolean> {
+  const { isPlaced } =
+    pantallaCompleta === false
+      ? await $.ui.open({ id: PANEL, title: 'Contexto', focus: true })
+      : await $.ui.open({ id: PANEL, title: 'Contexto' })
+
+  return isPlaced
+}
+
 export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Config): Promise<unknown> {
   const tabla = $.ui.resolve(e as never) as unknown as Tabla
   const { Box, Text, Button } = tabla
@@ -132,8 +145,28 @@ export async function dibujarPanel($: EngineInterface, e: RenderPanel, cfg: Conf
               ? tarjeta('Reparto', <Text dimColor>El reparto aparece al cerrar el primer turno.</Text>)
               : await vistaReparto($, c)
 
+  // Encima del prompt (sin pantalla completa) no hay clics: arriba, para que no
+  // lo corte la altura, cómo usarlo con el teclado y cómo llevarlo al lado.
+  const enLinea = e.surface === 'terminal' && e.props.placement === 'inline'
+  const avisoEnLinea = !enLinea ? null : (
+    <Box flexDirection="column" marginBottom={1}>
+      <Text color="warning" wrap="wrap">
+        {'▲ Sin pantalla completa: el panel va encima del prompt y aquí no funcionan los clics.'}
+      </Text>
+      <Text dimColor wrap="wrap">
+        {e.props.isFocused === true
+          ? '  Tab y ⇧Tab recorren los botones · Enter pulsa · flechas desplazan · Esc vuelve al prompt'
+          : '  ctrl+x tab para usarlo con el teclado (Tab, Enter, flechas; Esc vuelve al prompt)'}
+      </Text>
+      <Text dimColor wrap="wrap">
+        {'  Para tenerlo al lado y con clics: /tui fullscreen (reinicia y retoma la sesión)'}
+      </Text>
+    </Box>
+  )
+
   return (
     <Box flexDirection="column">
+      {avisoEnLinea}
       {cabecera}
       {await selectorEnPanel($, tabla, e.surface)}
       {limitesUso}

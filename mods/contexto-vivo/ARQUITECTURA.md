@@ -102,7 +102,7 @@ mods/contexto-vivo/
 | `arbol/operaciones.ts` | Cargar, checkpoint, nombrar, restaurar, fork, borrar, limpiar, injertar | |
 | `arbol/rewind.ts` | Vigía del rewind nativo | |
 | `arbol/consultas.ts` | Buscar, comparar, exportar y sus textos para los comandos | |
-| `panel/index.tsx` | `dibujarPanel`: lee el estado, calcula y monta cabecera, límites, pestañas y la vista activa | |
+| `panel/index.tsx` | `abrirPanel` (con el teclado si no hay pantalla completa) y `dibujarPanel`: lee el estado, calcula y monta el aviso de sin pantalla completa, la cabecera, los límites, las pestañas y la vista activa | |
 | `panel/tipos.ts` | `Ctx` (lo que recibe cada pestaña), `Tabla`, `RenderPanel` | ✔ |
 | `panel/piezas.tsx` | Piezas comunes: `pasar`, `principal`, `avivar`, `tarjeta`, `dato`, `controlesCompactar`, `llamada` | |
 | `panel/cabecera.tsx` | Tarjeta de ocupación y tarjeta de límites de uso | |
@@ -111,6 +111,8 @@ mods/contexto-vivo/
 ### Cómo se dibuja el panel
 
 `panel/index.tsx` hace todas las lecturas (`leer…`) y cálculos del dibujo una sola vez y los reúne en un `Ctx`. Cada pestaña es `vistaX($, c)` y empieza con `const { … } = c`. `$` va siempre como argumento propio, nunca dentro de `c` (sección 9).
+
+**Al lado o encima del prompt.** El motor pone el panel al lado (`e.props.placement === 'dock'`) solo con el renderizador de pantalla completa y desde 110 columnas. Con el clásico lo pone encima del prompt (`'inline'`) y el terminal no envía clics. Por eso `/ctx` y `/cp-arbol` lo abren con `abrirPanel($, e.presentation?.isFullscreen)`: con `isFullscreen === false` piden `focus: true`, para que Tab, Enter y las flechas funcionen desde el principio. Y en `inline` el panel empieza con un aviso de cómo usarlo con el teclado (cambia según `isFocused`) y de `/tui fullscreen`. Va arriba para que la altura limitada no lo corte.
 
 ## 3. Estado
 
@@ -184,7 +186,7 @@ Cada átomo está en el mismo fichero que sus `leer…`/`cambiar…`. `leer…` 
 
 | Comando | Qué hace |
 |---------|----------|
-| `/ctx` | Mide y abre el panel. |
+| `/ctx` | Mide y abre el panel (con el teclado si no hay pantalla completa). |
 | `/contexto-top` | Resumen en texto con `$.ui.log`, que el modelo no lee. |
 | `/cp [nombre]` | Guarda un checkpoint o nombra el actual. |
 | `/cp-ir <id o nombre>` | Restaura, en el siguiente tic del reloj (`$.clock.after(10)`). |
@@ -329,6 +331,7 @@ Para añadir una opción: declárala en `userConfig`, añádela a `Config` y a `
 | los límites 5h/7d… | Límites desde el primer minuto, tic, `/clear` |
 | con el estado vacío… | La fila con los límites guardados |
 | los umbrales salen de /config | `leerConfig` y umbrales |
+| sin pantalla completa, /ctx abre el panel con el teclado… | `abrirPanel` según `presentation.isFullscreen`; aviso del panel según `placement` e `isFocused` |
 | el selector ejecuta /model y /effort… | Banda, comandos reales y su eco oculto |
 | el selector cambia el modelo por /config… | Cambio por `/config` y espera al final del turno |
 | árbol de checkpoints | Guardar, nombrar, restaurar, fork, rewind, comparar, exportar, buscar, borrar y `/clear` |

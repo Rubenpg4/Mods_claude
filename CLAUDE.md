@@ -15,7 +15,7 @@ Una colección de mods de Claude Code (`mods/<nombre>/`). Ahora hay uno, **conte
 ## Comandos
 
 ```sh
-claude plugin test mods/contexto-vivo       # tests (18); deben pasar todos
+claude plugin test mods/contexto-vivo       # tests (19); deben pasar todos
 claude plugin validate mods/contexto-vivo   # manifiesto, hooks, llamadas a $, estado
 ```
 

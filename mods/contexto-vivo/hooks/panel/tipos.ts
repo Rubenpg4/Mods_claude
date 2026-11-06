@@ -22,7 +22,9 @@ export type Elemento = (props: Record<string, unknown>) => unknown
 // Lo que el panel necesita del evento `ui.render` del Pane.
 export type RenderPanel = {
   surface: 'terminal' | 'desktop' | 'vscode' | 'mobile'
-  props: { bodyColumns: number }
+  // `placement`: `dock` al lado (pantalla completa) o `inline` encima del
+  // prompt (renderizador clásico, sin clics). `isFocused`: tiene el teclado.
+  props: { bodyColumns: number; placement?: 'dock' | 'inline'; isFocused?: boolean }
 }
 
 // Los elementos que da `$.ui.resolve` en el panel.

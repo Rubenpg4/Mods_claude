@@ -71,6 +71,8 @@ El índice del árbol vive en `~/.claude/contexto-vivo/ramas/<proyecto>/indice.j
 
 O `claude plugin install contexto-vivo --marketplace Rubenpg4/Mods_claude` desde una consola. Hace falta Claude Code 2.1.319 o posterior, y `node` en el `PATH` para el árbol de checkpoints; «resolver con IA» abre PowerShell 7 (`pwsh`) en Windows Terminal. Para desarrollarlo desde una copia local, ver el [README del repositorio](../../README.md#instalación).
 
+**El panel al lado necesita el modo pantalla completa de Claude Code.** Con el renderizador clásico, Claude Code pone el panel encima del prompt y el terminal no envía los clics. El panel lo avisa y se abre con el teclado (Tab y ⇧Tab recorren los botones, Enter pulsa, las flechas desplazan, Esc vuelve al prompt; `ctrl+x tab` lo enfoca otra vez). Para tenerlo al lado y con clics, ejecuta `/tui fullscreen`: reinicia y retoma la sesión. También se puede fijar con `"tui": "fullscreen"` en `~/.claude/settings.json` o con la variable `CLAUDE_CODE_NO_FLICKER=1`. Claude Code desactiva ese modo por su cuenta en tmux, por SSH en Windows y si antes falló varias veces al arrancar. El panel se pone al lado desde 110 columnas.
+
 ## Datos que guarda
 
 Bajo la carpeta `.claude` que contiene el mod (si el mod no está bajo ninguna, la `.claude` del proyecto):

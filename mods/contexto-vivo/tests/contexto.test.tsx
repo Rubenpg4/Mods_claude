@@ -510,6 +510,49 @@ test('los umbrales salen de /config', { options: { avisoPorcentaje: 40, avisosEm
   await ui.unmount()
 })
 
+test('sin pantalla completa, /ctx abre el panel con el teclado y explica cómo llevarlo al lado', async ($, on) => {
+  mock.clock(on, { now: T0 })
+  on('command.register', (_, e) => ({ value: { command: e.name } }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.log', () => ({ value: undefined }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  const abiertos: Record<string, unknown>[] = []
+  on('ui.open', (_, e) => {
+    abiertos.push(e as unknown as Record<string, unknown>)
+    return { value: { isPlaced: true } }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  // Con pantalla completa se abre al lado, sin quitar el teclado al prompt.
+  await $.command.run({
+    command: 'ctx', args: '', origin: { kind: 'human' }, presentation: { isFullscreen: true, columns: 200 },
+  } as never)
+  // Sin ella va encima del prompt, sin clics: se abre con el teclado.
+  await $.command.run({
+    command: 'ctx', args: '', origin: { kind: 'human' }, presentation: { isFullscreen: false, columns: 120 },
+  } as never)
+  expect(abiertos.map(a => a.focus)).toEqual([undefined, true])
+
+  // Al lado no hay aviso; encima del prompt, sí, y dice cómo llevarlo al lado.
+  const lado = await $.ui.mount({ ...PANEL, surface: 'terminal' })
+  expect(await lado.find({ type: 'Text', text: /Sin pantalla completa/ })).toBeUndefined()
+  await lado.unmount()
+  const encima = await $.ui.mount({ ...PANEL, surface: 'terminal', props: { ...PANEL.props, placement: 'inline' } })
+  expect(await encima.find({ type: 'Text', text: /Sin pantalla completa/ })).toBeDefined()
+  expect(await encima.find({ type: 'Text', text: /\/tui fullscreen/ })).toBeDefined()
+  expect(await encima.find({ type: 'Text', text: /ctrl\+x tab/ })).toBeDefined()
+  await encima.unmount()
+  // Con el teclado ya en el panel, explica las teclas.
+  const enfocado = await $.ui.mount({
+    ...PANEL, surface: 'terminal', props: { ...PANEL.props, placement: 'inline', isFocused: true },
+  })
+  expect(await enfocado.find({ type: 'Text', text: /Esc vuelve al prompt/ })).toBeDefined()
+  await enfocado.unmount()
+})
+
 test('el selector ejecuta /model y /effort de verdad al pulsar y oculta sus filas', async ($, on) => {
   const avisos: string[] = []
   const ejecutados: string[] = []

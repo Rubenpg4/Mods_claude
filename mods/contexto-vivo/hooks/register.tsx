@@ -48,7 +48,7 @@ import { acabaTurno, comandoModelo, empiezaTurno, esPropio, soltarEsfuerzo } fro
 import { dibujarBanda } from './selector/banda'
 import { esNivel } from './selector/modelos'
 import { leerConfig } from './config'
-import { dibujarPanel } from './panel/index'
+import { abrirPanel, dibujarPanel } from './panel/index'
 
 let tic: Timer | null = null
 
@@ -134,9 +134,9 @@ export const register: Register = (on, opciones) => {
     return r
   })
 
-  on('command.run', { command: 'ctx' }, async $ => {
+  on('command.run', { command: 'ctx' }, async ($, e) => {
     await fotografiar($)
-    await $.ui.open({ id: PANEL, title: 'Contexto' })
+    await abrirPanel($, e.presentation?.isFullscreen)
 
     return {}
   })
@@ -259,9 +259,9 @@ export const register: Register = (on, opciones) => {
     return {}
   })
 
-  on('command.run', { command: 'cp-arbol' }, async $ => {
+  on('command.run', { command: 'cp-arbol' }, async ($, e) => {
     await cambiarPestana($, () => 'arbol')
-    const { isPlaced } = await $.ui.open({ id: PANEL, title: 'Contexto' })
+    const isPlaced = await abrirPanel($, e.presentation?.isFullscreen)
     if (!isPlaced) $.ui.log(informeArbol(await leerArbol($), await leerHead($)))
 
     return {}
